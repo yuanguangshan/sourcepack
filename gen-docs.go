@@ -18,7 +18,7 @@ import (
 //  Configuration & Data Types
 // ============================================================
 
-const versionStr = "v3.0.0"
+const versionStr = "v3.1.0"
 
 type Config struct {
 	RootDir        string
@@ -32,6 +32,7 @@ type Config struct {
 	Verbose        bool
 	Version        bool
 	ShowStats      bool
+	DryRun         bool
 }
 
 type FileMetadata struct {
@@ -49,6 +50,11 @@ type Stats struct {
 	TotalLines         int
 	Skipped            int
 	DirCount           int
+}
+
+type SkippedFile struct {
+	RelPath string
+	Reason  string
 }
 
 type DirStats struct {
@@ -69,7 +75,6 @@ type ExtStats struct {
 //  Ignore Rules (split by type for correct matching)
 // ============================================================
 
-// 精确匹配目录名
 var ignoreDirs = map[string]bool{
 	".git": true, ".idea": true, ".vscode": true, ".svn": true, ".hg": true,
 	"node_modules": true, "vendor": true, "dist": true, "build": true,
@@ -84,7 +89,6 @@ var ignoreDirs = map[string]bool{
 	".history": true, ".nyc_output": true, ".coverage": true,
 }
 
-// 精确匹配文件名
 var ignoreFiles = map[string]bool{
 	"package-lock.json": true, "yarn.lock": true, "go.sum": true,
 	"composer.lock": true, "Gemfile.lock": true,
@@ -92,7 +96,6 @@ var ignoreFiles = map[string]bool{
 	"coverage.xml": true, "thumbs.db": true,
 }
 
-// 按扩展名排除（解决原版 *.log 通配符无法匹配的 bug）
 var ignoreExts = map[string]bool{
 	".log": true, ".tmp": true, ".temp": true, ".cache": true,
 	".swp": true, ".swo": true, ".pid": true, ".seed": true, ".idx": true,
@@ -157,10 +160,16 @@ func main() {
 	printStartupInfo(cfg)
 
 	fmt.Println("⏳ 正在扫描文件结构...")
-	files, stats, err := scanDirectory(cfg)
+	files, stats, skippedFiles, err := scanDirectory(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ 扫描失败: %v\n", err)
 		os.Exit(1)
+	}
+
+	// ── dry-run 模式：只输出预览，不写文件 ──
+	if cfg.DryRun {
+		printDryRunReport(cfg, files, stats, skippedFiles)
+		return
 	}
 
 	fmt.Printf("💾 正在写入文档 [文件数: %d]...\n", len(files))
@@ -192,7 +201,9 @@ func parseFlags() Config {
 	flag.BoolVar(&cfg.NoSubdirs, "ns", false, "Alias for --no-subdirs")
 	flag.BoolVar(&cfg.Verbose, "v", false, "Verbose output")
 	flag.BoolVar(&cfg.Version, "version", false, "Show version")
-	flag.BoolVar(&cfg.ShowStats, "s", false, "Show project statistics only (no doc generation)")
+	flag.BoolVar(&cfg.ShowStats, "s", false, "Show project statistics only")
+	flag.BoolVar(&cfg.DryRun, "dry-run", false, "Preview which files would be included (no output written)")
+	flag.BoolVar(&cfg.DryRun, "n", false, "Alias for --dry-run")
 
 	flag.Parse()
 
@@ -214,7 +225,6 @@ func parseFlags() Config {
 	cfg.ExcludeExts = normalizeExts(exclude)
 	cfg.ExcludeMatches = splitAndTrim(excludeMatch)
 
-	// 加载 .gen-docs-ignore 等配置文件
 	fileExcludes, pathExcludes := loadIgnoreFile(cfg.RootDir)
 	cfg.ExcludeExts = mergeUnique(cfg.ExcludeExts, fileExcludes)
 	cfg.ExcludeMatches = mergeUnique(cfg.ExcludeMatches, pathExcludes)
@@ -476,13 +486,16 @@ func fileIsExcluded(relPath string, cfg Config) bool {
 }
 
 // ============================================================
-//  Directory Scanning (for doc generation)
+//  Directory Scanning (for doc generation & dry-run)
 // ============================================================
 
-func scanDirectory(cfg Config) ([]FileMetadata, Stats, error) {
+func scanDirectory(cfg Config) ([]FileMetadata, Stats, []SkippedFile, error) {
 	var files []FileMetadata
 	var stats Stats
+	var skipped []SkippedFile
 	absOutput, _ := filepath.Abs(cfg.OutputFile)
+
+	trackSkip := cfg.DryRun || cfg.Verbose
 
 	err := filepath.WalkDir(cfg.RootDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -517,6 +530,9 @@ func scanDirectory(cfg Config) ([]FileMetadata, Stats, error) {
 		// 内置文件名/扩展名排除
 		if shouldSkipFile(d.Name()) {
 			stats.Skipped++
+			if trackSkip {
+				skipped = append(skipped, SkippedFile{relPath, "内置忽略规则 (文件名/扩展名)"})
+			}
 			return nil
 		}
 
@@ -526,21 +542,30 @@ func scanDirectory(cfg Config) ([]FileMetadata, Stats, error) {
 			return nil
 		}
 
-		// 大小 + 二进制过滤
 		if info.Size() > cfg.MaxFileSize {
 			logf(cfg.Verbose, "⊘ 文件过大: %s (%.2f KB)", relPath, float64(info.Size())/1024)
 			stats.Skipped++
+			if trackSkip {
+				skipped = append(skipped, SkippedFile{relPath, fmt.Sprintf("超出大小限制 (%s > %d KB)", formatSize(info.Size()), cfg.MaxFileSize/1024)})
+			}
 			return nil
 		}
+
 		if isBinaryFile(path) {
 			logf(cfg.Verbose, "⊘ 二进制文件: %s", relPath)
 			stats.Skipped++
+			if trackSkip {
+				skipped = append(skipped, SkippedFile{relPath, "二进制/minified 文件"})
+			}
 			return nil
 		}
 
 		// 包含过滤
 		if !filePassesInclude(relPath, cfg) {
 			stats.Skipped++
+			if trackSkip {
+				skipped = append(skipped, SkippedFile{relPath, "不符合 include 规则 (-i / -m)"})
+			}
 			return nil
 		}
 
@@ -550,6 +575,9 @@ func scanDirectory(cfg Config) ([]FileMetadata, Stats, error) {
 		if fileIsExcluded(relPath, cfg) {
 			logf(cfg.Verbose, "⊘ 被排除规则拦截: %s", relPath)
 			stats.ExplicitlyExcluded++
+			if trackSkip {
+				skipped = append(skipped, SkippedFile{relPath, "命中 exclude 规则 (-x / -xm)"})
+			}
 			return nil
 		}
 
@@ -573,7 +601,169 @@ func scanDirectory(cfg Config) ([]FileMetadata, Stats, error) {
 		return files[i].RelPath < files[j].RelPath
 	})
 
-	return files, stats, err
+	return files, stats, skipped, err
+}
+
+// ============================================================
+//  Dry-Run Report
+// ============================================================
+
+func printDryRunReport(cfg Config, files []FileMetadata, stats Stats, skippedFiles []SkippedFile) {
+	sep := strings.Repeat("=", 74)
+	thin := strings.Repeat("─", 74)
+
+	fmt.Println()
+	fmt.Println(sep)
+	fmt.Println("  🔍  DRY-RUN 模式 — 不会写入任何文件")
+	fmt.Println(sep)
+
+	// ── 当前生效的规则 ──
+	fmt.Println()
+	fmt.Println("📋 当前过滤规则:")
+	fmt.Println(thin)
+	fmt.Printf("  Root Dir   : %s\n", cfg.RootDir)
+	fmt.Printf("  Output File: %s\n", cfg.OutputFile)
+	fmt.Printf("  Max Size   : %d KB\n", cfg.MaxFileSize/1024)
+	if len(cfg.IncludeExts) > 0 {
+		fmt.Printf("  Include Ext: %s\n", strings.Join(cfg.IncludeExts, ", "))
+	} else {
+		fmt.Printf("  Include Ext: (全部)\n")
+	}
+	if len(cfg.IncludeMatches) > 0 {
+		fmt.Printf("  Include Key: %s\n", strings.Join(cfg.IncludeMatches, ", "))
+	}
+	if len(cfg.ExcludeExts) > 0 {
+		fmt.Printf("  Exclude Ext: %s\n", strings.Join(cfg.ExcludeExts, ", "))
+	}
+	if len(cfg.ExcludeMatches) > 0 {
+		fmt.Printf("  Exclude Key: %s\n", strings.Join(cfg.ExcludeMatches, ", "))
+	}
+	fmt.Printf("  No Subdirs : %v\n", cfg.NoSubdirs)
+
+	// ── 将要收录的文件 ──
+	fmt.Println()
+	fmt.Println("✅ 将被收录的文件:")
+	fmt.Println(thin)
+
+	if len(files) == 0 {
+		fmt.Println("  (无文件被收录，请检查过滤规则)")
+	} else {
+		// 按目录分组展示
+		dirGroup := make(map[string][]FileMetadata)
+		var dirs []string
+		for _, f := range files {
+			dir := filepath.Dir(f.RelPath)
+			if _, exists := dirGroup[dir]; !exists {
+				dirs = append(dirs, dir)
+			}
+			dirGroup[dir] = append(dirGroup[dir], f)
+		}
+		sort.Strings(dirs)
+
+		for _, dir := range dirs {
+			dirFiles := dirGroup[dir]
+			var dirSize int64
+			var dirLines int
+			for _, f := range dirFiles {
+				dirSize += f.Size
+				dirLines += f.LineCount
+			}
+			fmt.Printf("\n  📂 %s/ (%d files, %s, %d lines)\n", dir, len(dirFiles), formatSize(dirSize), dirLines)
+			for _, f := range dirFiles {
+				lang := detectLanguage(f.RelPath)
+				fmt.Printf("     ├─ %-40s %6d lines  %10s  [%s]\n",
+					filepath.Base(f.RelPath), f.LineCount, formatSize(f.Size), lang)
+			}
+		}
+	}
+
+	// ── 被跳过的文件 ──
+	fmt.Println()
+	fmt.Println("❌ 被跳过的文件:")
+	fmt.Println(thin)
+
+	if len(skippedFiles) == 0 {
+		fmt.Println("  (无)")
+	} else {
+		// 按原因分组
+		reasonGroup := make(map[string][]string)
+		var reasons []string
+		for _, s := range skippedFiles {
+			if _, exists := reasonGroup[s.Reason]; !exists {
+				reasons = append(reasons, s.Reason)
+			}
+			reasonGroup[s.Reason] = append(reasonGroup[s.Reason], s.RelPath)
+		}
+		sort.Strings(reasons)
+
+		for _, reason := range reasons {
+			paths := reasonGroup[reason]
+			fmt.Printf("\n  🚫 %s (%d 个文件)\n", reason, len(paths))
+			limit := len(paths)
+			truncated := false
+			if limit > 15 {
+				limit = 15
+				truncated = true
+			}
+			for _, p := range paths[:limit] {
+				fmt.Printf("     ├─ %s\n", p)
+			}
+			if truncated {
+				fmt.Printf("     └─ ... 还有 %d 个文件\n", len(paths)-15)
+			}
+		}
+	}
+
+	// ── 汇总数字 ──
+	fmt.Println()
+	fmt.Println(sep)
+	fmt.Println("📊 汇总:")
+	fmt.Println(sep)
+	fmt.Printf("  扫描目录数        : %d\n", stats.DirCount)
+	fmt.Printf("  符合 include 规则 : %d\n", stats.PotentialMatches)
+	fmt.Printf("  被 exclude 踢除   : %d\n", stats.ExplicitlyExcluded)
+	fmt.Printf("  其他原因跳过      : %d\n", stats.Skipped)
+	fmt.Printf("  最终收录文件数    : %d\n", stats.FileCount)
+	fmt.Printf("  预计总行数        : %d\n", stats.TotalLines)
+	fmt.Printf("  预计总大小        : %s\n", formatSize(stats.TotalSize))
+
+	// ── 按类型分布 ──
+	if len(files) > 0 {
+		extMap := make(map[string]*ExtStats)
+		for _, f := range files {
+			ext := strings.ToLower(filepath.Ext(f.RelPath))
+			if ext == "" {
+				ext = "(no ext)"
+			}
+			if es, ok := extMap[ext]; ok {
+				es.FileCount++
+				es.TotalSize += f.Size
+				es.TotalLines += f.LineCount
+			} else {
+				extMap[ext] = &ExtStats{Ext: ext, FileCount: 1, TotalSize: f.Size, TotalLines: f.LineCount}
+			}
+		}
+
+		var extList []ExtStats
+		for _, es := range extMap {
+			extList = append(extList, *es)
+		}
+		sort.Slice(extList, func(i, j int) bool { return extList[i].TotalLines > extList[j].TotalLines })
+
+		fmt.Println()
+		fmt.Println("📊 收录文件类型分布:")
+		fmt.Println(thin)
+		fmt.Printf("  %-12s %8s %12s %10s\n", "类型", "文件数", "总大小", "总行数")
+		fmt.Println("  " + strings.Repeat("-", 46))
+		for _, es := range extList {
+			fmt.Printf("  %-12s %8d %12s %10d\n", es.Ext, es.FileCount, formatSize(es.TotalSize), es.TotalLines)
+		}
+	}
+
+	fmt.Println()
+	fmt.Println(sep)
+	fmt.Println("💡 确认无误后去掉 --dry-run / -n 即可生成文档")
+	fmt.Println(sep)
 }
 
 // ============================================================
@@ -714,7 +904,6 @@ func showProjectStats(cfg Config) error {
 
 	sep := strings.Repeat("=", 71)
 
-	// 基本统计
 	fmt.Println(sep)
 	fmt.Println("📁 基本统计")
 	fmt.Println(sep)
@@ -724,13 +913,8 @@ func showProjectStats(cfg Config) error {
 	fmt.Printf("  总大小    : %s (%.2f MB)\n",
 		formatSize(stats.TotalSize), float64(stats.TotalSize)/1024/1024)
 
-	// Top 5 最大文件夹
 	printTopDirs(dirMap, stats, sep)
-
-	// Top 5 最大文件
 	printTopFiles(files, stats, sep)
-
-	// 按文件类型统计
 	printExtBreakdown(extMap, stats, sep)
 
 	fmt.Println("\n" + sep)
@@ -740,7 +924,6 @@ func showProjectStats(cfg Config) error {
 	return nil
 }
 
-// collectAllFiles 专用于 -s 模式，不受 include/exclude 规则限制
 func collectAllFiles(cfg Config) ([]FileMetadata, Stats, error) {
 	var files []FileMetadata
 	var stats Stats
