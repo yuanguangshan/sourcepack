@@ -1,0 +1,32 @@
+{
+  "name": "gen-docs",
+  "version": "1.0.0",
+  "description": "`tools/` 是 **Tmux-FSM 的开发工具集合**，负责提供辅助开发、文档生成、测试等工具。该模块包含了项目维护和开发过程中使用的各种实用工具，旨在提高开发效率和项目可维护性。",
+  "main": "index.js",
+  "bin": {
+    "gen-docs": "index.js"
+  },
+  "scripts": {
+    "build": "go build -o gen-docs gen-docs.go",
+    "prepublishOnly": "npm run build",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "files": [
+    "index.js",
+    "gen-docs",
+    "gen-docs.exe",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yuanguangshan/gen-docs.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/yuanguangshan/gen-docs/issues"
+  },
+  "homepage": "https://github.com/yuanguangshan/gen-docs#readme"
+}

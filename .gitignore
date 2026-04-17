@@ -1,0 +1,4 @@
+gen-docs
+gen-docs.exe
+node_modules
+*.log
