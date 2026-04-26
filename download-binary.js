@@ -22,7 +22,7 @@ if (!mappedArch) {
 }
 
 const ext = platform === 'win32' ? '.zip' : '.tar.gz';
-const archiveName = `godoc_${VERSION}_${platform}_${mappedArch}${ext}`;
+const archiveName = `sourcepack_${VERSION}_${platform}_${mappedArch}${ext}`;
 const downloadUrl = `https://github.com/${REPO}/releases/download/v${VERSION}/${archiveName}`;
 
 const binName = platform === 'win32' ? 'godoc.exe' : `godoc-${platform}-${mappedArch}`;
