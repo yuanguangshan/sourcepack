@@ -1,4 +1,4 @@
-module gdox
+module github.com/yuanguangshan/gdox
 
 go 1.21
 
