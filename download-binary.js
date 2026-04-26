@@ -7,7 +7,7 @@ const path = require('path');
 const os = require('os');
 const zlib = require('zlib');
 
-const REPO = 'yuanguangshan/gen-docs';
+const REPO = 'yuanguangshan/gdox';
 const VERSION = require('./package.json').version;
 
 const platform = os.platform();

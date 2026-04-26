@@ -19,7 +19,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yuanguangshan/gen-docs.git"
+    "url": "git+https://github.com/yuanguangshan/gdox.git"
   },
   "keywords": [
     "code-snapshot",
@@ -37,7 +37,7 @@
   "license": "ISC",
   "type": "commonjs",
   "bugs": {
-    "url": "https://github.com/yuanguangshan/gen-docs/issues"
+    "url": "https://github.com/yuanguangshan/gdox/issues"
   },
-  "homepage": "https://github.com/yuanguangshan/gen-docs#readme"
+  "homepage": "https://github.com/yuanguangshan/gdox#readme"
 }
