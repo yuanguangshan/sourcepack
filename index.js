@@ -17,14 +17,14 @@ if (!mappedArch) {
 }
 
 const binaryName = platform === 'win32'
-  ? `gdox-win-${mappedArch}.exe`
-  : `gdox-${platform}-${mappedArch}`;
+  ? `godoc-win-${mappedArch}.exe`
+  : `godoc-${platform}-${mappedArch}`;
 const binaryPath = path.join(__dirname, binaryName);
 
 if (!fs.existsSync(binaryPath)) {
   console.error(`Error: Binary not found at ${binaryPath}`);
   console.error(`Platform: ${platform}, Arch: ${arch}`);
-  console.error(`Try running: npm rebuild @yuanguangshan/gdox`);
+  console.error(`Try running: npm rebuild godoc`);
   process.exit(1);
 }
 

@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# Gdox (gd) 安装脚本
+# Godoc (gd) 安装脚本
 
 INSTALL_DIR="/usr/local/bin"
-BINARY_NAME="gdox"
+BINARY_NAME="godoc"
 SHORTCUT_NAME="gd"
-SOURCE_FILE="gdox.go"
+SOURCE_FILE="godoc.go"
 
 # 检查权限
 USE_SUDO=""
@@ -15,7 +15,7 @@ fi
 
 # 卸载逻辑
 if [[ "$1" == "--uninstall" ]]; then
-    echo "🗑 卸载 Gdox..."
+    echo "🗑 卸载 Godoc..."
     $USE_SUDO rm -f "$INSTALL_DIR/$BINARY_NAME" "$INSTALL_DIR/$SHORTCUT_NAME"
     
     # 额外检查 ~/.local/bin 以防万一
@@ -27,7 +27,7 @@ if [[ "$1" == "--uninstall" ]]; then
     exit 0
 fi
 
-echo "🚀 开始安装 Gdox..."
+echo "🚀 开始安装 Godoc..."
 
 # 检查 Go 环境
 if ! command -v go &> /dev/null; then
@@ -42,7 +42,7 @@ if [[ ! -f "$SOURCE_FILE" ]]; then
 fi
 
 # 编译
-echo "📦 编译 Gdox..."
+echo "📦 编译 Godoc..."
 go build -o "$BINARY_NAME" "$SOURCE_FILE"
 if [ $? -ne 0 ]; then
     echo "❌ 编译失败"
@@ -69,5 +69,5 @@ echo -e "\n✅ 安装完成！"
 "$INSTALL_DIR/$BINARY_NAME" --version
 
 echo -e "\n现在你可以运行："
-echo "  gdox         # 完整命令"
+echo "  godoc         # 完整命令"
 echo "  gd           # 快捷命令"

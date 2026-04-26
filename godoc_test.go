@@ -13,10 +13,10 @@ func TestMatchPattern(t *testing.T) {
 		want    bool
 	}{
 		// Basename matching (no path separator in pattern)
-		{"gdox.go", "gdox.go", true},
-		{"gdox.go", "gdox", false}, // exact basename match only, no prefix
-		{"src/gdox.go", "gdox.go", true},
-		{"src/gdox.go", "gdox", false},
+		{"godoc.go", "godoc.go", true},
+		{"godoc.go", "godoc", false}, // exact basename match only, no prefix
+		{"src/godoc.go", "godoc.go", true},
+		{"src/godoc.go", "godoc", false},
 		{"foo.go", "*.go", true},
 		{"foo.txt", "*.go", false},
 		{"README.md", "*.md", true},

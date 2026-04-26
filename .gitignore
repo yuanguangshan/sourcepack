@@ -1,8 +1,8 @@
-/gdox
-gdox.exe
-gdox-darwin-*
-gdox-linux-*
-gdox-win-*.exe
+/godoc
+godoc.exe
+godoc-darwin-*
+godoc-linux-*
+godoc-win-*.exe
 *.tar.gz
 node_modules
 *.log
