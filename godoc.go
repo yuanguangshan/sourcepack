@@ -42,6 +42,7 @@ type Config struct {
 	NoGitignore       bool
 	AdditionalIgnores []string
 	Copy              bool
+	Push              bool
 	PushURL           string
 	AuthKey           string
 }
@@ -194,7 +195,11 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Printf("\n✨ Done! Copied to clipboard (%d chars) in %v\n", len(content), duration)
-	} else if config.PushURL != "" {
+	} else if config.Push {
+		if config.PushURL == "" {
+			fmt.Println("❌ SOURCEPACK_PUSH_URL env is required for push")
+			os.Exit(1)
+		}
 		if err := pushToRemote(content, config.PushURL, config.AuthKey); err != nil {
 			fmt.Printf("❌ Failed to push: %v\n", err)
 			os.Exit(1)
@@ -230,7 +235,7 @@ func parseFlags() Config {
 	pflag.BoolVar(&c.NoDefaultIgnore, "no-default-ignore", false, "Disable default ignore rules")
 	pflag.BoolVar(&c.NoGitignore, "no-gitignore", false, "Do not load .gitignore")
 	pflag.BoolVarP(&c.Copy, "copy", "c", false, "Copy output to clipboard instead of file")
-	pflag.StringVarP(&c.PushURL, "push-url", "p", "", "Push content to remote URL (e.g. https://host/submit)")
+	pflag.BoolVarP(&c.Push, "push", "p", false, "Push output to remote (requires SOURCEPACK_PUSH_URL env)")
 	pflag.StringVar(&c.AuthKey, "auth-key", "", "X-Auth-Key for push auth (or env SOURCEPACK_AUTH_KEY)")
 
 	pflag.Parse()
@@ -634,8 +639,9 @@ func printConfigSummary(c Config) {
 	fmt.Printf("  %-20s %v\n", "No default ignore:", c.NoDefaultIgnore)
 	fmt.Printf("  %-20s %v\n", "No .gitignore:", c.NoGitignore)
 	fmt.Printf("  %-20s %v\n", "Copy to clipboard:", c.Copy)
-	if c.PushURL != "" {
-		fmt.Printf("  %-20s %s\n", "Push to remote:", c.PushURL)
+	fmt.Printf("  %-20s %v\n", "Push to remote:", c.Push)
+	if c.Push {
+		fmt.Printf("  %-20s %s\n", "Push URL:", c.PushURL)
 	}
 	fmt.Println()
 }
