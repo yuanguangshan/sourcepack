@@ -171,12 +171,14 @@ func main() {
 	if config.DryRun {
 		printDryRun(files, stats, skipped)
 	}
-	
-	if config.ShowStats || config.DryRun {
+
+	if config.ShowStats {
 		printStatsTerminal(files, stats)
+		return
 	}
 
 	if config.DryRun {
+		printStatsTerminal(files, stats)
 		return
 	}
 
