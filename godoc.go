@@ -46,6 +46,7 @@ type Config struct {
 	Push              bool
 	PushURL           string
 	AuthKey           string
+	ICloud            bool
 }
 
 type FileMetadata struct {
@@ -221,6 +222,21 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Printf("\n✨ Done! Pushed to %s (%d chars) in %v\n", config.PushURL, len(content), duration)
+	} else if config.ICloud {
+		homeDir, _ := os.UserHomeDir()
+		icloudDir := filepath.Join(homeDir, "Library", "Mobile Documents", "iCloud~com~apple~CloudDocs", "Documents")
+		if err := os.MkdirAll(icloudDir, 0755); err != nil {
+			fmt.Printf("❌ Cannot create iCloud directory: %v\n", err)
+			os.Exit(1)
+		}
+		folderName := filepath.Base(config.RootDir)
+		dateStr := time.Now().Format("2006-01-02")
+		icloudFile := filepath.Join(icloudDir, folderName+"+"+dateStr+".md")
+		if err := os.WriteFile(icloudFile, []byte(content), 0644); err != nil {
+			fmt.Printf("❌ Error writing iCloud file: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("\n✨ Done! Saved to iCloud: %s (%d chars) in %v\n", icloudFile, len(content), duration)
 	} else {
 		if err := os.WriteFile(config.OutputFile, []byte(content), 0644); err != nil {
 			fmt.Printf("❌ Error writing file: %v\n", err)
@@ -265,6 +281,7 @@ func parseFlags() Config {
 	pflag.BoolVarP(&c.Copy, "copy", "c", false, "Copy output to clipboard instead of file")
 	pflag.BoolVarP(&c.Push, "push", "p", false, "Push output to remote (requires SOURCEPACK_PUSH_URL env)")
 	pflag.StringVar(&c.AuthKey, "auth-key", "", "X-Auth-Key for push auth (or env SOURCEPACK_AUTH_KEY)")
+	pflag.BoolVar(&c.ICloud, "icloud", false, "Save output to iCloud Documents folder")
 
 	pflag.Parse()
 
