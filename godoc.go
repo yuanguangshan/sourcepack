@@ -224,7 +224,7 @@ func main() {
 		fmt.Printf("\n✨ Done! Pushed to %s (%d chars) in %v\n", config.PushURL, len(content), duration)
 	} else if config.ICloud {
 		homeDir, _ := os.UserHomeDir()
-		icloudDir := filepath.Join(homeDir, "Library", "Mobile Documents", "iCloud~com~apple~CloudDocs", "Documents")
+		icloudDir := filepath.Join(homeDir, "Library", "Mobile Documents", "com~apple~CloudDocs", "Documents")
 		if err := os.MkdirAll(icloudDir, 0755); err != nil {
 			fmt.Printf("❌ Cannot create iCloud directory: %v\n", err)
 			os.Exit(1)
