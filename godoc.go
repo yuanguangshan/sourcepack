@@ -956,9 +956,9 @@ func copyToClipboardStreaming(config Config, files []FileMetadata, stats Stats) 
 
 func pushStatsToRemote(config Config, files []FileMetadata, stats Stats) error {
 	pr, pw := io.Pipe()
-	enc := newJSONStreamEncoder(pw)
 
 	go func() {
+		enc := newJSONStreamEncoder(pw)
 		content := generateStatsContent(config, files, stats)
 		enc.Write([]byte(content))
 		enc.Close()
