@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"os/exec"
@@ -268,17 +269,18 @@ func parseFlags() Config {
 	pflag.BoolVar(&c.NoDefaultIgnore, "no-default-ignore", false, "Disable default ignore rules")
 	pflag.BoolVar(&c.NoGitignore, "no-gitignore", false, "Do not load .gitignore")
 	pflag.BoolVarP(&c.Copy, "copy", "c", false, "Copy output to clipboard instead of file")
-	pflag.BoolVarP(&c.Push, "push", "p", false, "Push output to remote (requires SOURCEPACK_PUSH_URL env)")
+	pflag.BoolVarP(&c.Push, "push", "p", false, "Push output to remote (requires --push-url or SOURCEPACK_PUSH_URL env)")
+	pflag.StringVarP(&c.PushURL, "push-url", "u", "", "Remote URL for push (e.g. https://host/submit). Overrides SOURCEPACK_PUSH_URL env")
 	pflag.StringVar(&c.AuthKey, "auth-key", "", "X-Auth-Key for push auth (or env SOURCEPACK_AUTH_KEY)")
 	pflag.BoolVar(&c.ICloud, "icloud", false, "Save output to iCloud Documents folder")
 
 	pflag.Parse()
 
-	if c.AuthKey == "" {
-		c.AuthKey = os.Getenv("SOURCEPACK_AUTH_KEY")
-	}
 	if c.PushURL == "" {
 		c.PushURL = os.Getenv("SOURCEPACK_PUSH_URL")
+	}
+	if c.AuthKey == "" {
+		c.AuthKey = os.Getenv("SOURCEPACK_AUTH_KEY")
 	}
 
 	if incExts != "" { c.IncludeExts = cleanList(incExts) }
@@ -954,35 +956,66 @@ func copyToClipboardStreaming(config Config, files []FileMetadata, stats Stats) 
 	return writeErr
 }
 
-func pushStatsToRemote(config Config, files []FileMetadata, stats Stats) error {
-	pr, pw := io.Pipe()
+func uploadViaMultipart(config Config, filePath string, filename string) error {
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
 
-	go func() {
-		enc := newJSONStreamEncoder(pw)
-		content := generateStatsContent(config, files, stats)
-		enc.Write([]byte(content))
-		enc.Close()
-		pw.Close()
-	}()
-
-	req, err := http.NewRequest("POST", config.PushURL, pr)
+	f, err := os.Open(filePath)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	defer f.Close()
+
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(part, f); err != nil {
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest("POST", config.PushURL, body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
 	if config.AuthKey != "" {
 		req.Header.Set("X-Auth-Key", config.AuthKey)
 	}
-	client := &http.Client{Timeout: 60 * time.Second}
+
+	client := &http.Client{Timeout: 120 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("server returned %d", resp.StatusCode)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(respBody))
 	}
 	return nil
+}
+
+func pushStatsToRemote(config Config, files []FileMetadata, stats Stats) error {
+	tmp, err := os.CreateTemp("", "sourcepack-stats-*.md")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	content := generateStatsContent(config, files, stats)
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		return err
+	}
+	tmp.Close()
+
+	return uploadViaMultipart(config, tmpPath, filepath.Base(config.RootDir)+"_stats.md")
 }
 
 // ============================================================
@@ -1039,46 +1072,18 @@ func (e *jsonStreamEncoder) Close() error {
 }
 
 func pushToRemoteStreaming(config Config, files []FileMetadata, stats Stats) error {
-	pr, pw := io.Pipe()
-
-	req, err := http.NewRequest("POST", config.PushURL, pr)
+	tmp, err := os.CreateTemp("", "sourcepack-*.md")
 	if err != nil {
-		pr.Close()
-		pw.Close()
-		return err
+		return fmt.Errorf("failed to create temp file: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if config.AuthKey != "" {
-		req.Header.Set("X-Auth-Key", config.AuthKey)
-	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
 
-	client := &http.Client{Timeout: 60 * time.Second}
-
-	done := make(chan error, 1)
-	go func() {
-		resp, err := client.Do(req)
-		if err != nil {
-			pw.CloseWithError(err)
-			done <- err
-			return
-		}
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 256))
-		resp.Body.Close()
-		if resp.StatusCode != 200 {
-			done <- fmt.Errorf("server returned %d", resp.StatusCode)
-			return
-		}
-		done <- nil
-	}()
-
-	enc := newJSONStreamEncoder(pw)
-	writeErr := writeContent(config, files, stats, enc)
-	enc.Close()
+	writeErr := writeContent(config, files, stats, tmp)
+	tmp.Close()
 	if writeErr != nil {
-		pw.CloseWithError(writeErr)
-		<-done
 		return writeErr
 	}
-	pw.Close()
-	return <-done
+
+	return uploadViaMultipart(config, tmpPath, filepath.Base(config.RootDir)+"_snapshot.md")
 }
