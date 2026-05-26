@@ -10,10 +10,9 @@ builds:
 archives:
   - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     wrap_in_directory: true
-    formats:
-      - format: tar.gz
-        overrides:
-          - goos: windows
-            format: zip
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        format: zip
 checksum:
   name_template: 'checksums.txt'
