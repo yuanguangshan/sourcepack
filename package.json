@@ -13,7 +13,6 @@
   "scripts": {
     "postinstall": "node download-binary.js",
     "build": "VERSION=$(node -p \"require('./package.json').version\") && LDFLAGS=\"-X main.versionStr=v${VERSION}\" && echo \"Building sourcepack v${VERSION} ...\" && GOOS=darwin GOARCH=amd64 go build -ldflags \"$LDFLAGS\" -o sourcepack-darwin-amd64 godoc.go && GOOS=darwin GOARCH=arm64 go build -ldflags \"$LDFLAGS\" -o sourcepack-darwin-arm64 godoc.go && GOOS=linux GOARCH=amd64 go build -ldflags \"$LDFLAGS\" -o sourcepack-linux-amd64 godoc.go && GOOS=linux GOARCH=arm64 go build -ldflags \"$LDFLAGS\" -o sourcepack-linux-arm64 godoc.go && GOOS=windows GOARCH=amd64 go build -ldflags \"$LDFLAGS\" -o sourcepack-win-amd64.exe godoc.go && echo \"Done.\"",
-    "prepublishOnly": "npm run build",
     "test": "go test ./..."
   },
   "files": [
