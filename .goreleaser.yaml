@@ -1,3 +1,5 @@
+version: 2
+
 builds:
   - env: [CGO_ENABLED=0]
     goos: [linux, darwin, windows]
@@ -6,11 +8,12 @@ builds:
     ldflags:
       - -X main.versionStr=v{{.Version}}
 archives:
-  - format: tar.gz
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     wrap_in_directory: true
-    format_overrides:
-      - goos: windows
-        format: zip
+    formats:
+      - format: tar.gz
+        overrides:
+          - goos: windows
+            format: zip
 checksum:
   name_template: 'checksums.txt'
