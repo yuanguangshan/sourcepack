@@ -31,7 +31,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
+      - name: Setup npm auth
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
+          echo "registry=https://registry.npmjs.org/" >> ~/.npmrc
+      - name: Debug npm config
+        run: |
+          npm config list
+          npm whoami --registry https://registry.npmjs.org/ || echo "whoami failed"
       - name: Update version in package.json
         run: |
           VERSION=${GITHUB_REF_NAME#v}
@@ -41,5 +48,3 @@ jobs:
             require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
       - run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
