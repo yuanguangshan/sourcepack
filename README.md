@@ -41,7 +41,7 @@ gdoc -v             # 详细模式（显示扫描过程）
 ## 特性
 
 - **极速**: Go 编写，秒级处理万行代码。
-- **智能**: 自动处理 `.gitignore` 和二进制文件。
+- **智能**: 自动处理 `.gitignore` 和 `.gdignore`，支持 `!` 否定、`**` 通配等完整 gitignore 语法；自动跳过二进制文件。
 - **统计**: `-s` 多维度代码统计（Token 预估、目录占比、语言分布）。
 - **便捷**: `-c` 一键复制到剪贴板，`-p` 一键推送到远端。
 - **清晰**: 自动生成带跳转链接的项目目录树。
@@ -61,3 +61,15 @@ sourcepack -s -p        # 只推送统计数据
 
 ---
 *Simple, Fast, and AI-Friendly.*
+## `.gdignore` — 专属忽略文件
+
+在项目根目录放一个 `.gdignore` 文件，语法和 `.gitignore` 完全一致，但**只影响 sourcepack 的扫描**，不影响 Git。适合排除那些不想喂给 LLM 但又不想动 `.gitignore` 的文件（大 JSON、编译产物、测试夹具等）。
+
+示例 `.gdignore`：
+
+```gitignore
+*.json
+fixtures/
+!important_schema.json
+```
+
