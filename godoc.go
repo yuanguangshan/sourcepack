@@ -51,6 +51,7 @@ type Config struct {
 	Verbose           bool
 	Version           bool
 	ShowStats         bool
+	All               bool // shortcut: disable all ignore rules
 	DryRun            bool
 	NoDefaultIgnore   bool
 	NoGitignore       bool
@@ -334,6 +335,30 @@ func run(config Config) error {
 		printConfigSummary(config)
 	}
 
+	if config.All {
+		config.NoDefaultIgnore = true
+		config.NoGitignore = true
+	}
+
+	{
+		n := 0
+		if config.Copy {
+			n++
+		}
+		if config.Push {
+			n++
+		}
+		if config.ICloud {
+			n++
+		}
+		if config.ShowStats {
+			n++
+		}
+		if n > 1 {
+			fmt.Println("⚠  Multiple output modes detected (using priority: clipboard > push > icloud > stats > file)")
+		}
+	}
+
 	if !config.DryRun {
 		fmt.Println("▶ Sourcepack Started")
 	} else {
@@ -412,29 +437,35 @@ func run(config Config) error {
 	return nil
 }
 
-func parseFlags() Config {
-	var c Config
-
+func initFlags() {
 	pflag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
 		pflag.PrintDefaults()
+		fmt.Fprintln(os.Stderr, "\nConvenience shortcuts:")
+		fmt.Fprintln(os.Stderr, "  -a              Include all files (disable ignores, no .gitignore)")
 		fmt.Fprintln(os.Stderr, "\nCombinations:")
-		fmt.Fprintln(os.Stderr, "  -s -p     Show stats and push stats-only markdown to remote")
-		fmt.Fprintln(os.Stderr, "  -c -p     Not supported (-c takes priority)")
+		fmt.Fprintln(os.Stderr, "  -s -p           Show stats and push stats-only markdown to remote")
+		fmt.Fprintln(os.Stderr, "  -c -p           Not supported (-c takes priority)")
 		fmt.Fprintf(os.Stderr, "\nEnvironment variables:\n")
 		fmt.Fprintf(os.Stderr, "  SOURCEPACK_PUSH_URL    Remote URL for push (e.g. https://host/submit)\n")
 		fmt.Fprintf(os.Stderr, "  SOURCEPACK_AUTH_KEY    X-Auth-Key for push authentication\n")
 	}
+}
+
+func parseFlags() Config {
+	var c Config
+
+	initFlags()
 
 	pflag.StringVarP(&c.RootDir, "dir", "d", ".", "Root directory to scan")
 	pflag.StringVarP(&c.OutputFile, "out", "o", "project_snapshot.md", "Output markdown file")
 
 	var incExts, incMatches, excExts, excMatches, addIgnores string
-	pflag.StringVarP(&incExts, "include", "i", "", "Include extensions (comma separated)")
-	pflag.StringVarP(&incMatches, "match", "m", "", "Include path keywords (comma separated)")
-	pflag.StringVarP(&excExts, "exclude", "x", "", "Exclude extensions (comma separated)")
-	pflag.StringVarP(&excMatches, "exclude-match", "X", "", "Exclude path keywords (comma separated)")
-	pflag.StringVarP(&addIgnores, "ignore", "", "", "Additional ignore patterns (comma separated)")
+	pflag.StringVarP(&incExts, "include", "i", "", "Only include these extensions (e.g. go,md)")
+	pflag.StringVarP(&incMatches, "match", "m", "", "Only include paths containing these keywords")
+	pflag.StringVarP(&excExts, "exclude", "x", "", "Exclude these extensions (e.g. exe,bin)")
+	pflag.StringVarP(&excMatches, "exclude-match", "X", "", "Exclude paths containing these keywords")
+	pflag.StringVarP(&addIgnores, "ignore", "I", "", "Additional gitignore-style patterns (comma separated)")
 
 	pflag.Int64Var(&c.MaxFileSize, "max-size", 500, "Max file size in KB")
 	pflag.BoolVarP(&c.NoSubdirs, "no-subdirs", "n", false, "Do not scan subdirectories")
@@ -449,6 +480,7 @@ func parseFlags() Config {
 	pflag.StringVarP(&c.PushURL, "push-url", "u", "", "Remote URL for push (e.g. https://host/submit). Overrides SOURCEPACK_PUSH_URL env")
 	pflag.StringVar(&c.AuthKey, "auth-key", "", "X-Auth-Key for push auth (or env SOURCEPACK_AUTH_KEY)")
 	pflag.BoolVar(&c.ICloud, "icloud", false, "Save output to iCloud Documents folder")
+	pflag.BoolVarP(&c.All, "all", "a", false, "Include all files (disable all ignore rules)")
 
 	pflag.Parse()
 
@@ -463,16 +495,16 @@ func parseFlags() Config {
 		c.IncludeExts = cleanList(incExts)
 	}
 	if incMatches != "" {
-		c.IncludeMatches = cleanList(incMatches)
+		c.IncludeMatches = cleanPathList(incMatches)
 	}
 	if excExts != "" {
 		c.ExcludeExts = cleanList(excExts)
 	}
 	if excMatches != "" {
-		c.ExcludeMatches = cleanList(excMatches)
+		c.ExcludeMatches = cleanPathList(excMatches)
 	}
 	if addIgnores != "" {
-		c.AdditionalIgnores = cleanList(addIgnores)
+		c.AdditionalIgnores = cleanPathList(addIgnores)
 	}
 
 	c.MaxFileSize *= 1024
@@ -496,6 +528,24 @@ func cleanList(s string) []string {
 		} else {
 			res = append(res, trimmed)
 		}
+	}
+	return res
+}
+
+// cleanPathList splits a comma-separated list of path keywords or
+// gitignore-style patterns, trimming whitespace, without adding any
+// prefix. Used for --match/--exclude-match/--ignore, where a leading
+// dot would silently break the match (e.g. "_COMPLETE_BOOK" would
+// become "._COMPLETE_BOOK" and never match).
+func cleanPathList(s string) []string {
+	parts := strings.Split(s, ",")
+	var res []string
+	for _, p := range parts {
+		trimmed := strings.TrimSpace(p)
+		if trimmed == "" {
+			continue
+		}
+		res = append(res, trimmed)
 	}
 	return res
 }

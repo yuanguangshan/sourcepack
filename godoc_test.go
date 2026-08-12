@@ -139,6 +139,32 @@ func TestCleanList(t *testing.T) {
 	}
 }
 
+func TestCleanPathList(t *testing.T) {
+	tests := []struct {
+		input string
+		want  []string
+	}{
+		{"_COMPLETE_BOOK", []string{"_COMPLETE_BOOK"}},
+		{"chapters, materials", []string{"chapters", "materials"}},
+		{"黑莓,诺基亚", []string{"黑莓", "诺基亚"}},
+		{"src/main,*.tmp", []string{"src/main", "*.tmp"}},
+		{"go, ts", []string{"go", "ts"}},
+		{"  , ", nil},
+	}
+	for _, tt := range tests {
+		got := cleanPathList(tt.input)
+		if len(got) != len(tt.want) {
+			t.Errorf("cleanPathList(%q) = %v, want %v", tt.input, got, tt.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tt.want[i] {
+				t.Errorf("cleanPathList(%q)[%d] = %q, want %q", tt.input, i, got[i], tt.want[i])
+			}
+		}
+	}
+}
+
 func TestGenerateAnchor(t *testing.T) {
 	tests := []struct {
 		input string
