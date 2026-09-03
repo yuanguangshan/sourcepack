@@ -592,6 +592,9 @@ func scanDirectory(config Config) ([]FileMetadata, Stats, []SkippedFile) {
 			}
 			return nil
 		}
+		// 统一为 "/" 分隔：gitignore 规则、树形图、TOC 全部以 "/" 风格匹配，
+		// 避免 Windows 上 "\" 与规则里的 "/" 不一致导致 ignore 失效。
+		relPath = filepath.ToSlash(relPath)
 		if relPath == "." {
 			return nil
 		}
@@ -600,7 +603,7 @@ func scanDirectory(config Config) ([]FileMetadata, Stats, []SkippedFile) {
 			if shouldIgnoreDir(relPath, config, matcher) {
 				return filepath.SkipDir
 			}
-			if config.NoSubdirs && strings.Contains(relPath, string(filepath.Separator)) {
+			if config.NoSubdirs && strings.Contains(relPath, "/") {
 				return filepath.SkipDir
 			}
 			stats.DirCount++
@@ -613,38 +616,45 @@ func scanDirectory(config Config) ([]FileMetadata, Stats, []SkippedFile) {
 			return nil
 		}
 
-		// Skip output file
-		outRel := config.OutputFile
-		if filepath.IsAbs(outRel) {
-			if r, err := filepath.Rel(config.RootDir, outRel); err == nil {
-				outRel = r
+		// Skip output file（统一为 "/" 风格再比较）
+		outRel := filepath.ToSlash(config.OutputFile)
+		if filepath.IsAbs(config.OutputFile) {
+			if r, err := filepath.Rel(config.RootDir, config.OutputFile); err == nil {
+				outRel = filepath.ToSlash(r)
 			}
 		}
 		if relPath == outRel {
 			return nil
 		}
 
-		data, err := os.ReadFile(path)
+		// 快筛：超限文件直接跳过，不读内容
+		info, err := d.Info()
 		if err != nil {
-			skipped = append(skipped, SkippedFile{relPath, "Read error"})
+			skipped = append(skipped, SkippedFile{relPath, "Stat error"})
 			stats.Skipped++
 			return nil
 		}
-		if int64(len(data)) > config.MaxFileSize {
+		if info.Size() > config.MaxFileSize {
 			skipped = append(skipped, SkippedFile{relPath, "Size limit"})
 			stats.Skipped++
 			return nil
 		}
 
-		if !isKnownTextFile(relPath) && isBinaryBuffer(data) {
+		// 流式扫描：前 1KB 判二进制 + 全文数行，全程不把文件读进内存
+		lineCount, isBinary, err := scanFileStats(path, !isKnownTextFile(relPath))
+		if err != nil {
+			skipped = append(skipped, SkippedFile{relPath, "Read error"})
+			stats.Skipped++
+			return nil
+		}
+		if isBinary {
 			skipped = append(skipped, SkippedFile{relPath, "Binary file"})
 			stats.Skipped++
 			return nil
 		}
 
-		lineCount := countLinesBuffer(data)
-		tokens := len(data) / 4
-		fMeta := FileMetadata{RelPath: relPath, FullPath: path, Size: int64(len(data)), LineCount: lineCount}
+		tokens := int(info.Size() / 4)
+		fMeta := FileMetadata{RelPath: relPath, FullPath: path, Size: info.Size(), LineCount: lineCount}
 		files = append(files, fMeta)
 
 		if config.Verbose {
@@ -763,6 +773,44 @@ func isBinaryBuffer(buf []byte) bool {
 		}
 	}
 	return false
+}
+
+// binaryProbeSize 判断二进制时只探测文件头部字节（与 http.DetectContentType 思路一致）。
+const binaryProbeSize = 1024
+
+// scanFileStats 流式获取文件的行数，并按需探测头部判断是否二进制。
+// 只顺序读一遍文件即可完成两项工作，避免将整个文件读入内存。
+func scanFileStats(path string, probeBinary bool) (lineCount int, isBinary bool, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, false, err
+	}
+	defer f.Close()
+
+	reader := bufio.NewReader(f)
+	if probeBinary {
+		head, perr := reader.Peek(binaryProbeSize)
+		if perr != nil && perr != io.EOF {
+			return 0, false, perr
+		}
+		if isBinaryBuffer(head) {
+			return 0, true, nil
+		}
+	}
+
+	buf := make([]byte, 32*1024)
+	for {
+		n, rerr := reader.Read(buf)
+		if n > 0 {
+			lineCount += countLinesBuffer(buf[:n])
+		}
+		if rerr == io.EOF {
+			return lineCount, false, nil
+		}
+		if rerr != nil {
+			return 0, false, rerr
+		}
+	}
 }
 
 func isKnownTextFile(relPath string) bool {
@@ -1166,7 +1214,7 @@ type treeNode struct {
 func buildTreeString(files []FileMetadata, rootName string) string {
 	root := &treeNode{children: make(map[string]*treeNode)}
 	for _, f := range files {
-		parts := strings.Split(f.RelPath, string(filepath.Separator))
+		parts := strings.Split(f.RelPath, "/")
 		node := root
 		for _, part := range parts {
 			if _, ok := node.children[part]; !ok {
@@ -1345,55 +1393,6 @@ func pushStatsToRemote(config Config, files []FileMetadata, stats Stats) error {
 // ============================================================
 //  Remote Push Support (streaming via chunked transfer)
 // ============================================================
-
-type jsonStreamEncoder struct {
-	w     io.Writer
-	ended bool
-}
-
-func newJSONStreamEncoder(w io.Writer) *jsonStreamEncoder {
-	// Write opening brace and "content" key as JSON string start
-	fmt.Fprintf(w, `{"content": "`)
-	return &jsonStreamEncoder{w: w}
-}
-
-func (e *jsonStreamEncoder) Write(p []byte) (n int, err error) {
-	// JSON-escape the content bytes
-	for _, b := range p {
-		switch b {
-		case '"':
-			_, err = e.w.Write([]byte(`\"`))
-		case '\\':
-			_, err = e.w.Write([]byte(`\\`))
-		case '\n':
-			_, err = e.w.Write([]byte(`\n`))
-		case '\r':
-			_, err = e.w.Write([]byte(`\r`))
-		case '\t':
-			_, err = e.w.Write([]byte(`\t`))
-		default:
-			if b < 0x20 {
-				_, err = fmt.Fprintf(e.w, `\u%04x`, b)
-			} else {
-				_, err = e.w.Write([]byte{b})
-			}
-		}
-		if err != nil {
-			return n, err
-		}
-		n++
-	}
-	return n, nil
-}
-
-func (e *jsonStreamEncoder) Close() error {
-	if !e.ended {
-		e.ended = true
-		_, err := e.w.Write([]byte(`"}`))
-		return err
-	}
-	return nil
-}
 
 func pushToRemoteStreaming(config Config, files []FileMetadata, stats Stats) error {
 	tmp, err := os.CreateTemp("", "sourcepack-*.md")
