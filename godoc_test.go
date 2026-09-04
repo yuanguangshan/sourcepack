@@ -206,3 +206,45 @@ func TestBuildTreeString(t *testing.T) {
 		t.Errorf("buildTreeString() =\n%s\nwant:\n%s", got, want)
 	}
 }
+
+func TestIsSensitiveFile(t *testing.T) {
+	sensitive := []string{
+		".env", ".env.local", ".env.production", ".ENV",
+		"id_rsa", "id_ed25519", ".npmrc", ".netrc",
+		"credentials.json", "secrets.yaml", "server.pem", "private.key",
+	}
+	for _, name := range sensitive {
+		if !isSensitiveFile(name) {
+			t.Errorf("isSensitiveFile(%q) = false, want true", name)
+		}
+	}
+	normal := []string{
+		"main.go", "envelope.go", "environment.ts", "provider.go",
+		"README.md", "docker-compose.yaml", "Makefile",
+	}
+	for _, name := range normal {
+		if isSensitiveFile(name) {
+			t.Errorf("isSensitiveFile(%q) = true, want false", name)
+		}
+	}
+}
+
+func TestShouldIgnoreFileSensitiveDefaults(t *testing.T) {
+	cfg := Config{}
+	matcher := (*gitignoreMatcher)(nil)
+
+	if !shouldIgnoreFile(".env", cfg, matcher) {
+		t.Error(".env 应被默认忽略")
+	}
+	if !shouldIgnoreFile("config/.env.local", cfg, matcher) {
+		t.Error("config/.env.local 应被默认忽略")
+	}
+	if shouldIgnoreFile("main.go", cfg, matcher) {
+		t.Error("main.go 不应被忽略")
+	}
+	// --no-default-ignore 时保留显式放行能力
+	cfgOptOut := Config{NoDefaultIgnore: true}
+	if shouldIgnoreFile(".env", cfgOptOut, matcher) {
+		t.Error("--no-default-ignore 下 .env 不应被默认忽略")
+	}
+}

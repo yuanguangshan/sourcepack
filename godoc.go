@@ -128,6 +128,35 @@ var ignoreFiles = map[string]bool{
 	"coverage.xml": true, "thumbs.db": true,
 }
 
+// sensitiveFileExts 是绝不希望进入快照（尤其是 -p 推送到远端）的
+// 敏感文件扩展名。密钥/证书文件对 AI 上下文毫无价值，泄露代价极高。
+var sensitiveFileExts = map[string]bool{
+	".pem": true, ".key": true, ".p12": true, ".pfx": true,
+	".jks": true, ".keystore": true,
+}
+
+// isSensitiveFile 判断文件名是否属于默认必须排除的敏感文件。
+// 覆盖 .env 及其变体（.env.local/.env.production）、私钥、凭据文件等。
+// --no-default-ignore 时不生效，保留显式放行的逃生口。
+func isSensitiveFile(name string) bool {
+	lower := strings.ToLower(name)
+	// .env 与 .env.* 变体（.env.local、.env.production 等）
+	if lower == ".env" || strings.HasPrefix(lower, ".env.") {
+		return true
+	}
+	switch lower {
+	case "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+		".npmrc", ".netrc", ".git-credentials",
+		"credentials.json", "serviceaccountkey.json",
+		"secrets.yaml", "secrets.yml", "secrets.json", "secrets.toml":
+		return true
+	}
+	if ext := filepath.Ext(lower); sensitiveFileExts[ext] {
+		return true
+	}
+	return false
+}
+
 var knownTextFiles = map[string]bool{
 	"Makefile": true, "Dockerfile": true, "Rakefile": true, "Gemfile": true,
 	"CMakeLists.txt": true, "Vagrantfile": true, "Jenkinsfile": true,
@@ -717,6 +746,10 @@ func shouldIgnoreFile(relPath string, config Config, matcher *gitignoreMatcher) 
 	name := filepath.Base(relPath)
 	ext := filepath.Ext(relPath)
 	if !config.NoDefaultIgnore && ignoreFiles[name] {
+		return true
+	}
+	// 敏感文件（.env、私钥、凭据）默认一律排除，防止快照/推送泄露密钥
+	if !config.NoDefaultIgnore && isSensitiveFile(name) {
 		return true
 	}
 	if len(config.IncludeExts) > 0 {
