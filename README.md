@@ -51,7 +51,7 @@ gdoc          # 快捷命令
 | `-I, --ignore` | 追加 gitignore 风格忽略模式（逗号分隔） | `-I '*.md'` → 排除 md |
 | `--no-gitignore` | 不读 `.gitignore` | 原本被忽略的文件会进来 |
 | `--no-default-ignore` | 关闭内置忽略（`node_modules`、`.git` 等） | `node_modules/` 会进来 |
-| `-a, --all` | 关闭**所有**忽略规则（=`--no-gitignore` + `--no-default-ignore`） | 全部文件都进来 |
+| `-a, --all` | 关闭 `.gitignore` 与内置忽略（**不含 `.gdignore`**） | 见下方说明 |
 
 > `-I` 对**文件和目录都生效**（v1.7.4 前只对目录生效，是 bug）。
 > `-I` 的模式若不含 `/`，按 basename 匹配；含 `/` 则匹配整条相对路径。
@@ -189,14 +189,33 @@ fixtures/
 !important_schema.json
 ```
 
+**`.gdignore` 与 `-I` 的区别**：
+
+| | `.gdignore` | `-I '...'` |
+|---|---|---|
+| 持久性 | 存进仓库，团队共享 | 仅本次命令行 |
+| 生效范围 | 该目录及其子目录 | 本次扫描 |
+| 适合 | 项目级长期排除 | 一次性、临时过滤 |
+
+两者语法一致，且都与 `.gitignore` 叠加生效。
+
+> ⚠️ **`.gdignore` 无法被关闭**：即使加 `-a`（以及显式
+> `--no-gitignore --no-default-ignore`），`.gdignore` 仍然生效。
+> `-a` 只关闭 `.gitignore` 和内置忽略规则，不含 `.gdignore`。
+> 注意 `--help` 里 `-a` 的说明写的是 "disable all ignore rules"，
+> 与实现不符（实测确认）。
+
 
 ---
 
-## `-n` 修复记录（2026-09-15）
+## 修复记录（2026-09-15）
 
-`-n / --no-subdirs` 曾经**完全失效**，已修复。
+本日修复了两个**长期静默失效**的过滤参数。它们的共同点是：
+`--help` 和 README 都写着能用，实际却不起作用，且没有任何测试覆盖。
 
-**症状**：加 `-n` 后子目录文件仍被扫入，与文档描述不符。
+### `-n / --no-subdirs`：完全失效（v1.7.3 修复）
+
+**症状**：加 `-n` 后子目录文件仍被扫入。
 
 **根因**（`godoc.go`）：
 
@@ -211,8 +230,8 @@ if config.NoSubdirs && strings.Contains(relPath, "/") {
 （不含 `/`），条件永不成立；等走到二级 `src/deep` 才含 `/`，
 但那时父目录已遍历完，`SkipDir` 已无意义。
 
-**修复**：走到目录分支时 `relPath != "."` 必然成立（根目录已在前面 return），
-所以"任何目录"即"任何子目录"，直接跳过：
+**修复**：走到目录分支说明 `relPath != "."`（根目录已在前面 return），
+所以"任何目录"即"任何子目录"：
 
 ```go
 if config.NoSubdirs {
@@ -220,10 +239,33 @@ if config.NoSubdirs {
 }
 ```
 
-**为什么长期没被发现**：`NoSubdirs` 在此之前**没有任何测试**覆盖
-（唯一出现是 `streaming_test.go` 里设为 `false`）。现已补
-`nosubdirs_test.go` 两个用例：`-n` 时只扫根目录、不设时扫全部，
-两者互为对照，避免"一个都没扫到"也能通过。
+### `-I / --ignore`：对文件不生效（v1.7.4 修复）
 
-**验证**：`go test ./...` 全绿；并用实际二进制端到端复验
-（`-n` 只产出根目录文件，不带 `-n` 含全部嵌套文件）。
+**症状**：`-I 'top.md'`、`-I '*.md'` 这类**针对文件**的模式无效；
+只有 `-I 'src/'` 这种目录模式管用，而文档看不出这个区别。
+
+**根因**：`AdditionalIgnores` 只在 `shouldIgnoreDir` 里检查，
+`shouldIgnoreFile` 从未检查它。
+
+**修复**：`shouldIgnoreFile` 也遍历 `AdditionalIgnores` 做 `matchPattern`。
+
+### 为什么长期没被发现
+
+两个参数都**没有任何测试覆盖**：
+
+- `NoSubdirs` 唯一出现的地方是 `streaming_test.go` 里设为 `false`
+- `AdditionalIgnores` 同样从未在测试里设过非空值
+
+也就是说，它们从未被真正"使用"过，坏了也不会有人知道。
+
+现已补 `nosubdirs_test.go`，四个用例，且每个都做过**反向验证**
+（临时移除修复后测试确实失败，确认不是空断言）：
+
+| 用例 | 断言 |
+|---|---|
+| `-n` | 只扫到根目录文件，且**不能是 0 个**（防"全都没扫到"也算通过） |
+| 不带 `-n` | 扫到全部文件（对照，证明过滤确实在起作用） |
+| `-I 'top.md'` | 该文件被排除，其余保留 |
+| `-I '*.md'` | 只剩非 md 文件 |
+
+**验证**：`go test ./...` 全绿；并用 npm 安装的实际二进制端到端复验。
