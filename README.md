@@ -30,6 +30,77 @@ gdoc          # 快捷命令
 > export PATH="/opt/homebrew/bin:$PATH"
 > ```
 
+### 全部参数（含义均经实测核对）
+
+**筛选：包含**
+
+| 参数 | 含义 | 实测 |
+|---|---|---|
+| `-i, --include` | 只保留这些扩展名（逗号分隔） | `-i go` → 仅 `.go` |
+| `-m, --match` | 只保留路径含该关键字的文件 | `-m src` → 仅 `src/` 下 |
+| `-X, --exclude-match` | 排除路径含该关键字的文件 | `-X src` → 排除 `src/` |
+| `-x, --exclude` | 排除这些扩展名 | `-x exe` → 排除 `.exe` |
+
+> `-i` 与 `-x` 可组合，`-x` 后生效：`-i go,md -x md` → 仅 `.go`。
+> 注意 `-m`/`-X` 匹配的是**路径子串**，不是文件名全等。
+
+**筛选：忽略规则**
+
+| 参数 | 含义 | 实测 |
+|---|---|---|
+| `-I, --ignore` | 追加 gitignore 风格忽略模式（逗号分隔） | `-I '*.md'` → 排除 md |
+| `--no-gitignore` | 不读 `.gitignore` | 原本被忽略的文件会进来 |
+| `--no-default-ignore` | 关闭内置忽略（`node_modules`、`.git` 等） | `node_modules/` 会进来 |
+| `-a, --all` | 关闭**所有**忽略规则（=`--no-gitignore` + `--no-default-ignore`） | 全部文件都进来 |
+
+> `-I` 对**文件和目录都生效**（v1.7.4 前只对目录生效，是 bug）。
+> `-I` 的模式若不含 `/`，按 basename 匹配；含 `/` 则匹配整条相对路径。
+
+**范围与体积**
+
+| 参数 | 含义 | 实测 |
+|---|---|---|
+| `-d, --dir` | 要扫描的根目录（默认 `.`） | 可从任意位置指定目标目录 |
+| `-n, --no-subdirs` | 只扫根目录，不进子目录 | 子目录文件被排除 |
+| `--max-size` | 单文件大小上限，**单位 KB**（默认 500） | `--max-size 1` → 3KB 文件被跳过 |
+
+**输出**
+
+| 参数 | 含义 | 实测 |
+|---|---|---|
+| `-o, --out` | 输出文件名（默认 `project_snapshot.md`） | |
+| `--icloud` | 存到 iCloud Drive Documents | **优先于 `-o`** |
+| `-c, --copy` | 复制到剪贴板，**不写文件** | 目录内无产物 |
+| `-s, --stats` | 只打印统计，**不生成文件** | 目录内无产物 |
+| `--dry-run` | 预览（实际会打印统计摘要，非纯文件清单） | |
+| `-v, --verbose` | 打印配置与扫描细节 | 输出 Root/Output 等 |
+
+**远端推送**
+
+| 参数 | 含义 |
+|---|---|
+| `-p, --push` | 推送到远端中继；需 `--push-url` 或环境变量 `SOURCEPACK_PUSH_URL` |
+| `-u, --push-url` | 覆盖环境变量里的推送地址 |
+| `--auth-key` | `X-Auth-Key` 认证（或用 `SOURCEPACK_AUTH_KEY`） |
+
+> `-p` 未配 URL 时会明确报错 `SOURCEPACK_PUSH_URL env is required for push`，
+> 不会静默失败。
+
+**其它**
+
+| 参数 | 含义 |
+|---|---|
+| `--version` | 打印版本号 |
+| `-h, --help` | 帮助 |
+
+### 参数优先级（实测确认）
+
+| 同时给出 | 结果 |
+|---|---|
+| `-c` + `-p` | **`-c` 优先**，只复制到剪贴板，不推送 |
+| `--icloud` + `-o` | **`--icloud` 优先**，`-o` 指定的文件不会生成 |
+| `-i` + `-x` | 先按 `-i` 收窄，再按 `-x` 排除 |
+
 ### 常用示例
 
 ```bash
@@ -37,7 +108,7 @@ gx -i go,md         # 只包含 Go 和 Markdown 文件
 gx -x exe,bin       # 排除特定后缀
 gx -X vendor        # 排除路径中含该关键字的文件
 gx -n               # 只扫根目录，不进子目录
-gx -I 'test/*'      # 追加 gitignore 风格忽略模式
+gx -I '*.log'       # 追加忽略模式（文件/目录都生效）
 gx -s               # 显示详细统计，不生成文件
 gx -c               # 复制到剪贴板，不写文件
 gx -p               # 推送到远端中继（需 SOURCEPACK_PUSH_URL / SOURCEPACK_AUTH_KEY）
