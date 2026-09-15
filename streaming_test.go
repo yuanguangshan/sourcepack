@@ -8,12 +8,12 @@ import (
 
 func TestWriteContentOutput(t *testing.T) {
 	cfg := Config{
-		RootDir:    ".",
-		ShowStats:  false,
-		NoSubdirs:  false,
+		RootDir:         ".",
+		ShowStats:       false,
+		NoSubdirs:       false,
 		NoDefaultIgnore: true,
-		NoGitignore: true,
-		MaxFileSize: 500 * 1024,
+		NoGitignore:     true,
+		MaxFileSize:     500 * 1024,
 	}
 	files, stats, _ := scanDirectory(cfg)
 	if len(files) == 0 {
