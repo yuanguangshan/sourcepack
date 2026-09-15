@@ -82,3 +82,58 @@ func mustWrite(t *testing.T, p, content string) {
 		t.Fatal(err)
 	}
 }
+
+// -I / --ignore 追加忽略模式的回归测试。
+//
+// 守的背景：AdditionalIgnores 原先只在 shouldIgnoreDir 里检查，
+// 导致针对**文件**的模式（-I 'top.md'、-I '*.md'）完全不生效，
+// 只有目录模式（-I 'src/'）才管用——文档看不出这个区别。
+func TestAdditionalIgnoreAppliesToFiles(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, "src"))
+	mustWrite(t, filepath.Join(root, "top.md"), "# top")
+	mustWrite(t, filepath.Join(root, "keep.go"), "package main")
+	mustWrite(t, filepath.Join(root, "src", "a.go"), "package main")
+
+	cfg := Config{
+		RootDir:           root,
+		AdditionalIgnores: []string{"top.md"},
+		NoDefaultIgnore:   true,
+		NoGitignore:       true,
+		MaxFileSize:       500 * 1024,
+	}
+	files, _, err := scanDirectory(cfg)
+	if err != nil {
+		t.Fatalf("scanDirectory 失败: %v", err)
+	}
+	for _, f := range files {
+		if filepath.Base(f.RelPath) == "top.md" {
+			t.Errorf("❌ -I 'top.md' 未生效：top.md 仍被扫入")
+		}
+	}
+	if len(files) != 2 { // keep.go + src/a.go
+		t.Errorf("应剩 2 个文件，实际 %d: %v", len(files), files)
+	}
+}
+
+func TestAdditionalIgnoreGlobOnFiles(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "a.md"), "# a")
+	mustWrite(t, filepath.Join(root, "b.md"), "# b")
+	mustWrite(t, filepath.Join(root, "c.go"), "package main")
+
+	cfg := Config{
+		RootDir:           root,
+		AdditionalIgnores: []string{"*.md"},
+		NoDefaultIgnore:   true,
+		NoGitignore:       true,
+		MaxFileSize:       500 * 1024,
+	}
+	files, _, err := scanDirectory(cfg)
+	if err != nil {
+		t.Fatalf("scanDirectory 失败: %v", err)
+	}
+	if len(files) != 1 || filepath.Base(files[0].RelPath) != "c.go" {
+		t.Errorf("❌ -I '*.md' 应只留 c.go，实际: %v", files)
+	}
+}

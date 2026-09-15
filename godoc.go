@@ -761,6 +761,17 @@ func shouldIgnoreFile(relPath string, config Config, matcher *gitignoreMatcher) 
 	if !config.NoDefaultIgnore && isSensitiveFile(name) {
 		return true
 	}
+	// 用户用 -I/--ignore 追加的忽略模式。
+	//
+	// 注意：这里必须也检查一遍文件。原实现只在 shouldIgnoreDir 里检查
+	// AdditionalIgnores，导致 -I 'top.md'、-I '*.md' 这类**针对文件**的
+	// 模式完全不生效——只有写成 -I 'src/' 这种目录模式才管用，
+	// 而用户无法从文档看出这个区别。
+	for _, p := range config.AdditionalIgnores {
+		if matchPattern(relPath, p) {
+			return true
+		}
+	}
 	if len(config.IncludeExts) > 0 {
 		match := false
 		for _, e := range config.IncludeExts {
