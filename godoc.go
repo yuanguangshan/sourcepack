@@ -632,7 +632,16 @@ func scanDirectory(config Config) ([]FileMetadata, Stats, []SkippedFile) {
 			if shouldIgnoreDir(relPath, config, matcher) {
 				return filepath.SkipDir
 			}
-			if config.NoSubdirs && strings.Contains(relPath, "/") {
+			// NoSubdirs：只扫根目录，遇到任何子目录就 SkipDir。
+			//
+			// 注意：走到这里说明 relPath != "."（根目录已在上面 return），
+			// 因此"任何目录"就是"任何子目录"。
+			//
+			// 原实现用 strings.Contains(relPath, "/") 判断，是错的：
+			// 一级子目录的 relPath 是 "src"（不含 "/"），条件永不成立，
+			// 于是 -n 完全失效；而到 "src/deep" 时才含 "/"，那时父目录
+			// 早已被遍历，SkipDir 已经没有意义。
+			if config.NoSubdirs {
 				return filepath.SkipDir
 			}
 			stats.DirCount++

@@ -36,6 +36,7 @@ gdoc          # 快捷命令
 gx -i go,md         # 只包含 Go 和 Markdown 文件
 gx -x exe,bin       # 排除特定后缀
 gx -X vendor        # 排除路径中含该关键字的文件
+gx -n               # 只扫根目录，不进子目录
 gx -I 'test/*'      # 追加 gitignore 风格忽略模式
 gx -s               # 显示详细统计，不生成文件
 gx -c               # 复制到剪贴板，不写文件
@@ -120,39 +121,38 @@ fixtures/
 
 ---
 
-## ⚠️ 已知问题：`-n` 未生效（2026-09-15 实测）
+## `-n` 修复记录（2026-09-15）
 
-`-n / --no-subdirs` 的实际行为与文档不符：**它不会排除子目录文件**。
+`-n / --no-subdirs` 曾经**完全失效**，已修复。
 
-三次独立复验（每次用全新临时目录，避免上次的产物被扫进来）：
+**症状**：加 `-n` 后子目录文件仍被扫入，与文档描述不符。
 
-```
-目录结构: README.md  src/a.go  top.md
-$ gx -n          → 产出仍含 src/a.go   ❌
-```
-
-对照实验（其它过滤参数都正常）：
-
-| 参数 | 是否生效 |
-|---|---|
-| `-i go`（只含 go） | ✅ 生效 |
-| `-X src`（按关键字排除） | ✅ 生效 |
-| `-I 'top.md'`（追加忽略） | ✅ 生效 |
-| `--max-size 1`（大小上限） | ✅ 生效 |
-| **`-n`（不扫子目录）** | ❌ **不生效** |
-
-**原因**（`godoc.go:635`）：
+**根因**（`godoc.go`）：
 
 ```go
+// 错误实现
 if config.NoSubdirs && strings.Contains(relPath, "/") {
     return filepath.SkipDir
 }
 ```
 
-判断用的是 `strings.Contains(relPath, "/")`，但 `filepath.Walk` 走到一级子目录
-`src` 时，传入的 `relPath` 就是 `src`（本身不含 `/`），条件不成立，因此不会
-`SkipDir`。`-d` 指定相对路径与默认 `-d .` 两种调用方式都复现。
+`filepath.WalkDir` 走到**一级子目录** `src` 时，`relPath` 就是 `"src"`
+（不含 `/`），条件永不成立；等走到二级 `src/deep` 才含 `/`，
+但那时父目录已遍历完，`SkipDir` 已无意义。
 
-**绕过办法**：用 `-X 子目录名` 或在 `.gdignore` 里写 `子目录/`。
+**修复**：走到目录分支时 `relPath != "."` 必然成立（根目录已在前面 return），
+所以"任何目录"即"任何子目录"，直接跳过：
 
-这属于上游实现问题，尚未修复。
+```go
+if config.NoSubdirs {
+    return filepath.SkipDir
+}
+```
+
+**为什么长期没被发现**：`NoSubdirs` 在此之前**没有任何测试**覆盖
+（唯一出现是 `streaming_test.go` 里设为 `false`）。现已补
+`nosubdirs_test.go` 两个用例：`-n` 时只扫根目录、不设时扫全部，
+两者互为对照，避免"一个都没扫到"也能通过。
+
+**验证**：`go test ./...` 全绿；并用实际二进制端到端复验
+（`-n` 只产出根目录文件，不带 `-n` 含全部嵌套文件）。
