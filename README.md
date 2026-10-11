@@ -93,6 +93,27 @@ gdoc          # 快捷命令
 | `--version` | 打印版本号 |
 | `-h, --help` | 帮助 |
 
+**Git 变更打包（v1.8.0 新增）**
+
+把"本次改了什么"打包给 AI 审查，而不是整个项目。
+
+| 参数 | 含义 | 实测 |
+|---|---|---|
+| `-g, --git-diff` | 打包未提交的改动：工作区 + 索引 vs `--rev` | 等价 `git diff HEAD` 的变更集 |
+| `--rev` | `-g` 的比较基准，任意 git revspec（默认 `HEAD`） | `-g --rev HEAD~3` |
+| `--staged` | 只看暂存区（`git diff --cached`） | 与 `git diff --cached HEAD` 一致 |
+| `-G, --commits` | 打包最近 N 个提交（`git log -N`） | `-G 5` |
+| `--no-merges` | `-G` 时排除合并提交 | `-G 5 --no-merges` |
+| `--diff-only` | 只输出 diff，不输出变更文件全文 | 输出体积显著变小 |
+| `--max-diff-lines` | 单文件 diff 行数上限（默认 2000，**0 = 不限**） | 超限处标注省略行数 |
+
+> 短参数为什么不是 `-n`：`-n` 已经是 `--no-subdirs`（v1.7.3 刚修好），
+> 所以提交数用大写 `-G`，与 `-x`/`-X` 的大小写区分习惯一致。
+
+Git 模式下 `-i -x -m -X -I --max-size -o -c -p -s --dry-run --icloud -a`
+**全部照常生效**：git 只负责产出变更清单，后面的过滤、忽略、敏感文件
+gate、体积控制、渲染、剪贴板/推送都走同一条流水线。
+
 ### 参数优先级（实测确认）
 
 | 同时给出 | 结果 |
@@ -100,6 +121,9 @@ gdoc          # 快捷命令
 | `-c` + `-p` | **`-c` 优先**，只复制到剪贴板，不推送 |
 | `--icloud` + `-o` | **`--icloud` 优先**，`-o` 指定的文件不会生成 |
 | `-i` + `-x` | 先按 `-i` 收窄，再按 `-x` 排除 |
+| `-g` + `-G` | **明确报错**（两种模式互斥） |
+| `--staged` / `--rev` 不给 `-g` | **明确报错**（不静默忽略） |
+| `-n` + `-g`/`-G` | **明确报错**（git 模式不走目录遍历） |
 
 ### 常用示例
 
@@ -116,6 +140,23 @@ gx -s -p            # 只推送统计数据到远端
 gx -v               # 详细模式
 gx --max-size 200   # 单文件大小上限（KB，默认 500）
 gx --dry-run        # 预览（实际会打印统计摘要，不是纯文件清单）
+```
+
+### Git 变更模式常用示例
+
+```bash
+gx -g                     # 打包所有未提交改动（默认产物 git_changes.md）
+gx -g --staged            # 只看暂存区
+gx -g --rev HEAD~3        # 与 3 个提交之前比较
+gx -g --diff-only         # 只要 diff，不要变更文件全文
+gx -g -i go               # 只看 .go 的改动
+gx -g -m src/main         # 只看路径含 src/main 的改动
+gx -g -d services/api     # monorepo 里只看某个子目录
+gx -g -c                  # 直接把变更快照丢进剪贴板
+gx -g --max-diff-lines 500  # 单文件 diff 最多 500 行
+gx -G 5                   # 最近 5 个提交
+gx -G 10 --no-merges      # 最近 10 个非合并提交
+gx -G 1 --diff-only -c    # 只把最后一个提交的 diff 复制到剪贴板
 ```
 
 ### 本机别名（`~/.zshrc`）
@@ -154,10 +195,52 @@ gx --dry-run        # 预览（实际会打印统计摘要，不是纯文件清�
 - **完整源码** — 自动语法高亮、智能处理嵌套代码块
 - **项目统计** — `-s` 输出多维度统计（文件、目录、语言、Token 分布）
 
+## Git 变更快照包含（`-g` / `-G`）
+
+默认产物名是 `git_changes.md`（全量快照是 `project_snapshot.md`，两者互不覆盖）：
+
+1. **仓库信息** — 仓库根、分支、HEAD（含提交标题）、工作区是否 dirty、变更统计
+2. **变更摘要表** — 每个文件的状态（added/modified/deleted/renamed/untracked）、
+   `+N −M` 行数、标记（`staged` / `unstaged` / `untracked` / `binary` / `diff truncated`）
+3. **提交列表** — 仅 `-G`：SHA、日期、作者、标题，合并提交有标注
+4. **被规则排除的清单** — 每个被过滤的路径 + 原因（`Sensitive file`、
+   `Default ignore dir: node_modules`、`Not in -i/--include` …）
+5. **删除 / 重命名 / 二进制文件清单**
+6. **逐文件明细** — `diff` 代码块 + **变更文件的完整内容**（`--diff-only` 可关掉）
+   - `-G` 模式按提交分组，每个提交一节
+   - 全文只在同一路径**最后出现的那次**输出，并标注为
+     `Full content (current working tree)`（历史模式下它是当前工作区的内容）
+
+### 与 git 行为对齐的几个关键点（实测）
+
+| 情况 | 处理 |
+|---|---|
+| 一个文件既暂存又未暂存（`git add -p`） | 输出 `git diff HEAD` 作为真值，标记 `staged, unstaged` |
+| 未跟踪文件 | 走 `git ls-files --others --exclude-standard`，不受 `git status` 文本格式影响 |
+| 已跟踪但命中 `.gitignore` 的文件 | **仍会输出**（git 模式不重复套用 `.gitignore`） |
+| 未跟踪且被 `.gitignore` 忽略的文件 | git 自己就排除了，不进变更集 |
+| 重命名 | `-M` 检测，显示 `old → new`；`--name-status -z` 解析，不怕空格/换行路径 |
+| 合并提交（`-G` 默认包含） | 相对**第一父**求 diff，并标注 merge |
+| `-G 5 --no-merges` | 取 5 个非合并提交 |
+| 二进制文件 | git 的判定优先；只列清单，不出正文，diff 仍是 git 原样的 `Binary files ... differ` |
+| 删除的文件 | 保留 diff；正文标注 `Full content omitted: Not in working tree` |
+| 中文 / 空格文件名 | `-c core.quotepath=false`，原样 UTF-8；diff 头里的尾 TAB 会被正确剥离 |
+| 大 diff | 单文件默认截断到 `--max-diff-lines 2000` 行并标注；总量超 2 万行时终端与文档都会警告 |
+| 超过 64 MB 的 diff | 在最后一个完整文件边界处截断并标注 |
+
+> **安全**：`.env`、`id_rsa`、`.npmrc`、`.git-credentials` 等敏感文件沿用全量
+> 快照的 gate，**默认排除**并列入"被规则排除的清单"。注意 `git add -f` 过的
+> `.env` 会出现在 diff 里，所以这个 gate 是必需的，而不是可选项（`-a` 才会放行）。
+
+> **`-d` 子目录**：在 monorepo 子目录里执行 `gx -g -d services/api` 时，
+> 变更范围限制在该子目录（用 `git rev-parse --show-prefix` 判定，软链路径也不会错），
+> 输出中的路径仍以仓库根为基准。
+
 ## 特性
 
 - **极速**: Go 编写，秒级处理万行代码。
 - **智能**: 自动处理 `.gitignore` 和 `.gdignore`，支持 `!` 否定、`**` 通配等完整 gitignore 语法；自动跳过二进制文件。
+- **变更模式**: `-g` 打包未提交改动、`-G N` 打包最近 N 个提交，直接产出一份适合 AI 审查的变更快照（diff + 变更文件全文）。
 - **统计**: `-s` 多维度代码统计（Token 预估、目录占比、语言分布）。
 - **便捷**: `-c` 一键复制到剪贴板，`-p` 一键推送到远端。
 - **清晰**: 自动生成带跳转链接的项目目录树。
@@ -269,3 +352,71 @@ if config.NoSubdirs {
 | `-I '*.md'` | 只剩非 md 文件 |
 
 **验证**：`go test ./...` 全绿；并用 npm 安装的实际二进制端到端复验。
+
+---
+
+## 新增记录（2026-10-11 · v1.8.0）：Git 变更打包
+
+新增 `-g / --git-diff`、`-G / --commits` 两种变更模式，以及
+`--rev`、`--staged`、`--no-merges`、`--diff-only`、`--max-diff-lines` 五个参数。
+
+### 设计：git 只是"来源"，不是另一套流水线
+
+```
+                 ┌─ 来源 A：WalkDir 全量扫描 ──┐
+changeset（git）─┤                              ├─→ 同一套过滤/忽略/敏感 gate/体积/渲染/剪贴板/推送
+                 └─ 来源 B：git changeset ──────┘
+```
+
+`collectChangeSet()` 只产出一份 changeset（路径 + 状态 + diff），
+`buildChangeFiles()` 把它换成与 `scanDirectory()` 完全相同的
+`([]FileMetadata, Stats, []SkippedFile)`，所以 `-s / -c / -p / --icloud /
+--dry-run / -o` 一行都不用改就能用。
+
+实现落在新文件里，没往 43KB 的 `godoc.go` 里继续堆：
+
+| 文件 | 职责 |
+|---|---|
+| `changeset.go` | git 调用、`-z` 解析、diff 分块、行数统计、截断 |
+| `changeoutput.go` | 变更过滤（复用既有规则）+ 变更快照排版 |
+
+### 实现期修掉的 5 个坑（都有回归测试或手工复验）
+
+| 坑 | 症状 | 根因 / 修法 |
+|---|---|---|
+| `rename to` 解析 | 摘要里多出一条 `to src/deep/new.go` 的假条目 | 用 `ln[IndexByte(' ')+1:]` 取路径，把 `to ` 也留下了（"rename to " 是两段词）；改成 `TrimPrefix(ln, "rename to ")` |
+| 暂存集合 | 所有变更都被标成 `staged` | 取暂存集合的 `git diff` 漏了 `--cached`，实际拿到的是"工作区 vs HEAD" |
+| 未跟踪文件重复标记 | 表格里显示 `untracked, unstaged` | 未跟踪文件不在 `git diff` 里，`Unstaged` 是我们自己硬塞的 |
+| `-d` 子目录范围失效 | `gx -g -d docs` 仍打包整个仓库 | `filepath.Rel(repoRoot, userDir)`：`--show-toplevel` 给的是真实路径 `/private/tmp/...`，而 `-d` 可能是软链 `/tmp/...`，算出 `../..` 直接放弃；改用 `git rev-parse --show-prefix` |
+| `in N commits` 重复 | 标记变成 `in 2 commits, in 3 commits` | 在聚合循环里边累加边写标记；改为聚合结束再算 |
+
+### 构建方式的变更（重要）
+
+源文件从 1 个变成 3 个，所以所有构建入口都从"指定文件"改成"按包构建"：
+
+```bash
+# 以前
+go build -o sourcepack godoc.go
+# 现在
+go build -o sourcepack .
+```
+
+涉及 `package.json` 的 `build` 脚本、`install.sh`、`.goreleaser.yaml`。
+`go test ./...` 不受影响。
+
+### 测试
+
+`changeset_test.go` 覆盖解析层（`-z` 输出、diff 分块计数、路径反转义、
+行数截断）与 git 集成层（暂存/未暂存/部分暂存、重命名、未跟踪、
+`.gdignore`、敏感文件、`-a`、`-G` 与 `--no-merges`、删除文件、
+子目录范围、空仓库、`--diff-only`、围栏加长）。
+
+其中四个都做过**反向验证**（把修复临时改回错误实现，对应用例确实失败）：
+
+| 反向改动 | 失败的用例 |
+|---|---|
+| `rename to` 改回 `ln[IndexByte(' ')+1:]` | `TestSplitPatchCountsAndPaths` |
+| 暂存集合去掉 `--cached` | `TestGitWorkingTreeClassification`（staged 8 ≠ 3） |
+| `--show-prefix` 改回 `filepath.Rel` | `TestGitSubdirScope`（Pathspec 变成 `""`） |
+| hunk 计数改回"只看 `+`/`-` 前缀" | `TestSplitPatchCountsAndPaths`（+1 −1 ≠ +2 −2） |
+

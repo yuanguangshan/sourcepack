@@ -5,7 +5,7 @@
 INSTALL_DIR="/usr/local/bin"
 BINARY_NAME="sourcepack"
 SHORTCUT_NAMES=("gdoc" "gdx" "gx" "doc")
-SOURCE_FILE="godoc.go"
+SOURCE_FILE="go.mod"   # 入口是包（godoc.go + changeset.go + changeoutput.go）
 
 # 检查权限
 USE_SUDO=""
@@ -48,7 +48,7 @@ fi
 
 # 编译
 echo "📦 编译 Sourcepack..."
-go build -o "$BINARY_NAME" "$SOURCE_FILE"
+go build -o "$BINARY_NAME" .
 if [ $? -ne 0 ]; then
     echo "❌ 编译失败"
     exit 1

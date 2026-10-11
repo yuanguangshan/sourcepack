@@ -61,7 +61,22 @@ type Config struct {
 	PushURL           string
 	AuthKey           string
 	ICloud            bool
+
+	// Git 模式（-g / -G）：打包变更而不是全量快照。
+	// 这些参数全部与既有的筛选/输出参数正交，可自由组合。
+	GitDiff      bool   // -g：工作区 + 索引 相对 GitRev 的变更
+	GitLog       int    // -G N：最近 N 个提交
+	GitRev       string // --rev：-g 的比较基准（默认 HEAD）
+	GitStaged    bool   // --staged：只看暂存区
+	GitNoMerges  bool   // --no-merges：-G 时排除合并提交
+	DiffOnly     bool   // --diff-only：只输出 diff，不输出变更文件全文
+	MaxDiffLines int    // --max-diff-lines：单文件 diff 行数上限（0 = 不限）
+
+	// changeSet 由 run() 在 git 模式下填充，供 writeContent 分支渲染。
+	changeSet *ChangeSet
 }
+
+func (c Config) gitMode() bool { return c.GitDiff || c.GitLog > 0 }
 
 type FileMetadata struct {
 	RelPath   string
@@ -360,6 +375,10 @@ func main() {
 }
 
 func run(config Config) error {
+	if err := validateConfig(config, pflag.CommandLine); err != nil {
+		return err
+	}
+
 	if config.Verbose {
 		printConfigSummary(config)
 	}
@@ -397,7 +416,23 @@ func run(config Config) error {
 	startTime := time.Now()
 
 	// 1. Scan and filter
-	files, stats, skipped := scanDirectory(config)
+	//    git 模式（-g / -G）下"扫描"变成"取 changeset"，findings 之后
+	//    完全共用同一条 pipeline：过滤、忽略、敏感信息、体积、渲染、
+	//    剪贴板、推送、统计都不需要另写一套。
+	var files []FileMetadata
+	var stats Stats
+	var skipped []SkippedFile
+	if config.gitMode() {
+		cs, err := collectChangeSet(&config)
+		if err != nil {
+			return err
+		}
+		config.changeSet = cs
+		files, stats, skipped = buildChangeFiles(&config, cs)
+		printChangeSetTerminal(cs)
+	} else {
+		files, stats, skipped = scanDirectory(config)
+	}
 
 	if config.Verbose && len(skipped) > 0 {
 		fmt.Printf("\n⏭  Skipped %d files:\n", len(skipped))
@@ -466,10 +501,10 @@ func run(config Config) error {
 	return nil
 }
 
-func initFlags() {
-	pflag.Usage = func() {
+func initFlags(fs *pflag.FlagSet) {
+	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
-		pflag.PrintDefaults()
+		fs.PrintDefaults()
 		fmt.Fprintln(os.Stderr, "\nConvenience shortcuts:")
 		fmt.Fprintln(os.Stderr, "  -a              Include all files (disable ignores, no .gitignore)")
 		fmt.Fprintln(os.Stderr, "\nCombinations:")
@@ -481,37 +516,54 @@ func initFlags() {
 	}
 }
 
+// parseFlags 解析命令行。pflag.CommandLine 是 ExitOnError 的，
+// 所以参数写错时会打印用法并以 2 退出（与历史行为一致）。
 func parseFlags() Config {
+	return parseFlagsInto(pflag.CommandLine, os.Args[1:])
+}
+
+// parseFlagsInto 与 parseFlags 等价，但允许传入自定义 FlagSet，
+// 这样参数解析与组合校验都能在单测里覆盖。
+func parseFlagsInto(fs *pflag.FlagSet, args []string) Config {
 	var c Config
 
-	initFlags()
+	initFlags(fs)
 
-	pflag.StringVarP(&c.RootDir, "dir", "d", ".", "Root directory to scan")
-	pflag.StringVarP(&c.OutputFile, "out", "o", "project_snapshot.md", "Output markdown file")
+	fs.StringVarP(&c.RootDir, "dir", "d", ".", "Root directory to scan")
+	fs.StringVarP(&c.OutputFile, "out", "o", "project_snapshot.md", "Output markdown file")
 
 	var incExts, incMatches, excExts, excMatches, addIgnores string
-	pflag.StringVarP(&incExts, "include", "i", "", "Only include these extensions (e.g. go,md)")
-	pflag.StringVarP(&incMatches, "match", "m", "", "Only include paths containing these keywords")
-	pflag.StringVarP(&excExts, "exclude", "x", "", "Exclude these extensions (e.g. exe,bin)")
-	pflag.StringVarP(&excMatches, "exclude-match", "X", "", "Exclude paths containing these keywords")
-	pflag.StringVarP(&addIgnores, "ignore", "I", "", "Additional gitignore-style patterns (comma separated)")
+	fs.StringVarP(&incExts, "include", "i", "", "Only include these extensions (e.g. go,md)")
+	fs.StringVarP(&incMatches, "match", "m", "", "Only include paths containing these keywords")
+	fs.StringVarP(&excExts, "exclude", "x", "", "Exclude these extensions (e.g. exe,bin)")
+	fs.StringVarP(&excMatches, "exclude-match", "X", "", "Exclude paths containing these keywords")
+	fs.StringVarP(&addIgnores, "ignore", "I", "", "Additional gitignore-style patterns (comma separated)")
 
-	pflag.Int64Var(&c.MaxFileSize, "max-size", 500, "Max file size in KB")
-	pflag.BoolVarP(&c.NoSubdirs, "no-subdirs", "n", false, "Do not scan subdirectories")
-	pflag.BoolVarP(&c.Verbose, "verbose", "v", false, "Verbose output")
-	pflag.BoolVar(&c.Version, "version", false, "Show version")
-	pflag.BoolVarP(&c.ShowStats, "stats", "s", false, "Show detailed multi-dimensional statistics")
-	pflag.BoolVar(&c.DryRun, "dry-run", false, "Dry run mode (no file write)")
-	pflag.BoolVar(&c.NoDefaultIgnore, "no-default-ignore", false, "Disable default ignore rules")
-	pflag.BoolVar(&c.NoGitignore, "no-gitignore", false, "Do not load .gitignore")
-	pflag.BoolVarP(&c.Copy, "copy", "c", false, "Copy output to clipboard instead of file")
-	pflag.BoolVarP(&c.Push, "push", "p", false, "Push output to remote (requires --push-url or SOURCEPACK_PUSH_URL env)")
-	pflag.StringVarP(&c.PushURL, "push-url", "u", "", "Remote URL for push (e.g. https://host/submit). Overrides SOURCEPACK_PUSH_URL env")
-	pflag.StringVar(&c.AuthKey, "auth-key", "", "X-Auth-Key for push auth (or env SOURCEPACK_AUTH_KEY)")
-	pflag.BoolVar(&c.ICloud, "icloud", false, "Save output to iCloud Documents folder")
-	pflag.BoolVarP(&c.All, "all", "a", false, "Include all files (disable all ignore rules)")
+	fs.Int64Var(&c.MaxFileSize, "max-size", 500, "Max file size in KB")
+	fs.BoolVarP(&c.NoSubdirs, "no-subdirs", "n", false, "Do not scan subdirectories")
+	fs.BoolVarP(&c.Verbose, "verbose", "v", false, "Verbose output")
+	fs.BoolVar(&c.Version, "version", false, "Show version")
+	fs.BoolVarP(&c.ShowStats, "stats", "s", false, "Show detailed multi-dimensional statistics")
+	fs.BoolVar(&c.DryRun, "dry-run", false, "Dry run mode (no file write)")
+	fs.BoolVar(&c.NoDefaultIgnore, "no-default-ignore", false, "Disable default ignore rules")
+	fs.BoolVar(&c.NoGitignore, "no-gitignore", false, "Do not load .gitignore")
+	fs.BoolVarP(&c.Copy, "copy", "c", false, "Copy output to clipboard instead of file")
+	fs.BoolVarP(&c.Push, "push", "p", false, "Push output to remote (requires --push-url or SOURCEPACK_PUSH_URL env)")
+	fs.StringVarP(&c.PushURL, "push-url", "u", "", "Remote URL for push (e.g. https://host/submit). Overrides SOURCEPACK_PUSH_URL env")
+	fs.StringVar(&c.AuthKey, "auth-key", "", "X-Auth-Key for push auth (or env SOURCEPACK_AUTH_KEY)")
+	fs.BoolVar(&c.ICloud, "icloud", false, "Save output to iCloud Documents folder")
+	fs.BoolVarP(&c.All, "all", "a", false, "Include all files (disable all ignore rules)")
 
-	pflag.Parse()
+	// --- Git 变更打包（与上面的筛选/输出参数正交，可自由组合）---
+	fs.BoolVarP(&c.GitDiff, "git-diff", "g", false, "Package uncommitted changes: working tree + index vs --rev (default HEAD)")
+	fs.StringVar(&c.GitRev, "rev", "HEAD", "Revision to diff against for -g/--git-diff (any git revspec)")
+	fs.BoolVar(&c.GitStaged, "staged", false, "With -g: only staged changes (git diff --cached)")
+	fs.IntVarP(&c.GitLog, "commits", "G", 0, "Package the last N commits (git log -N)")
+	fs.BoolVar(&c.GitNoMerges, "no-merges", false, "With -G: exclude merge commits")
+	fs.BoolVar(&c.DiffOnly, "diff-only", false, "With -g/-G: emit diffs only, no full file contents")
+	fs.IntVar(&c.MaxDiffLines, "max-diff-lines", 2000, "With -g/-G: max diff lines kept per file (0 = unlimited)")
+
+	fs.Parse(args)
 
 	if c.PushURL == "" {
 		c.PushURL = os.Getenv("SOURCEPACK_PUSH_URL")
@@ -541,7 +593,47 @@ func parseFlags() Config {
 		c.RootDir = absRoot
 	}
 
+	// git 模式下默认产物名与全量快照区分开（用户显式给 -o 时不覆盖）。
+	if c.gitMode() && !fs.Changed("out") {
+		c.OutputFile = "git_changes.md"
+	}
+
 	return c
+}
+
+// validateConfig 校验参数组合。宁可明确报错，也不要静默忽略用户给错的参数。
+func validateConfig(c Config, fs *pflag.FlagSet) error {
+	if c.GitDiff && c.GitLog > 0 {
+		return fmt.Errorf("-g/--git-diff and -G/--commits are mutually exclusive (pick one)")
+	}
+	if c.GitLog < 0 {
+		return fmt.Errorf("-G/--commits must be >= 1")
+	}
+	if fs.Changed("commits") && c.GitLog == 0 {
+		return fmt.Errorf("-G/--commits must be >= 1")
+	}
+	if c.GitStaged && !c.GitDiff {
+		return fmt.Errorf("--staged only applies to -g/--git-diff")
+	}
+	if fs.Changed("no-merges") && c.GitLog == 0 {
+		return fmt.Errorf("--no-merges only applies to -G/--commits")
+	}
+	if fs.Changed("rev") && !c.GitDiff {
+		return fmt.Errorf("--rev only applies to -g/--git-diff")
+	}
+	if fs.Changed("diff-only") && !c.gitMode() {
+		return fmt.Errorf("--diff-only only applies to -g/--git-diff or -G/--commits")
+	}
+	if fs.Changed("max-diff-lines") && !c.gitMode() {
+		return fmt.Errorf("--max-diff-lines only applies to -g/--git-diff or -G/--commits")
+	}
+	if c.MaxDiffLines < 0 {
+		return fmt.Errorf("--max-diff-lines must be >= 0")
+	}
+	if fs.Changed("no-subdirs") && c.gitMode() {
+		return fmt.Errorf("-n/--no-subdirs has no effect in git mode; use -m/--match or -d <subdir> instead")
+	}
+	return nil
 }
 
 func cleanList(s string) []string {
@@ -699,30 +791,7 @@ func scanDirectory(config Config) ([]FileMetadata, Stats, []SkippedFile) {
 			fmt.Printf("  + %-40s %d lines\n", relPath, lineCount)
 		}
 
-		// Accumulate Stats
-		stats.FileCount++
-		stats.TotalSize += fMeta.Size
-		stats.TotalLines += fMeta.LineCount
-		stats.TotalTokens += tokens
-
-		dir := filepath.Dir(relPath)
-		if _, ok := stats.DirMap[dir]; !ok {
-			stats.DirMap[dir] = &DirStats{Path: dir}
-		}
-		stats.DirMap[dir].FileCount++
-		stats.DirMap[dir].TotalSize += fMeta.Size
-		stats.DirMap[dir].TotalLines += fMeta.LineCount
-
-		ext := strings.ToLower(filepath.Ext(relPath))
-		if ext == "" {
-			ext = "[no ext]"
-		}
-		if _, ok := stats.ExtMap[ext]; !ok {
-			stats.ExtMap[ext] = &ExtStats{Ext: ext}
-		}
-		stats.ExtMap[ext].FileCount++
-		stats.ExtMap[ext].TotalSize += fMeta.Size
-		stats.ExtMap[ext].TotalLines += fMeta.LineCount
+		accumulateStats(&stats, fMeta, tokens)
 
 		return nil
 	})
@@ -731,6 +800,34 @@ func scanDirectory(config Config) ([]FileMetadata, Stats, []SkippedFile) {
 	}
 
 	return files, stats, skipped
+}
+
+// accumulateStats 把一个文件计入统计。全量快照与 git 变更模式共用，
+// 保证两种模式下的 -s 输出结构一致。
+func accumulateStats(stats *Stats, fMeta FileMetadata, tokens int) {
+	stats.FileCount++
+	stats.TotalSize += fMeta.Size
+	stats.TotalLines += fMeta.LineCount
+	stats.TotalTokens += tokens
+
+	dir := filepath.Dir(fMeta.RelPath)
+	if _, ok := stats.DirMap[dir]; !ok {
+		stats.DirMap[dir] = &DirStats{Path: dir}
+	}
+	stats.DirMap[dir].FileCount++
+	stats.DirMap[dir].TotalSize += fMeta.Size
+	stats.DirMap[dir].TotalLines += fMeta.LineCount
+
+	ext := strings.ToLower(filepath.Ext(fMeta.RelPath))
+	if ext == "" {
+		ext = "[no ext]"
+	}
+	if _, ok := stats.ExtMap[ext]; !ok {
+		stats.ExtMap[ext] = &ExtStats{Ext: ext}
+	}
+	stats.ExtMap[ext].FileCount++
+	stats.ExtMap[ext].TotalSize += fMeta.Size
+	stats.ExtMap[ext].TotalLines += fMeta.LineCount
 }
 
 func shouldIgnoreDir(relPath string, config Config, matcher *gitignoreMatcher) bool {
@@ -752,14 +849,21 @@ func shouldIgnoreDir(relPath string, config Config, matcher *gitignoreMatcher) b
 }
 
 func shouldIgnoreFile(relPath string, config Config, matcher *gitignoreMatcher) bool {
+	return shouldIgnoreFileReason(relPath, config, matcher) != ""
+}
+
+// shouldIgnoreFileReason 与 shouldIgnoreFile 判定完全一致，但返回被排除的
+// 原因（"" 表示保留）。git 变更模式需要把"被谁过滤掉了"如实列出来，
+// 否则用户会以为变更丢了。
+func shouldIgnoreFileReason(relPath string, config Config, matcher *gitignoreMatcher) string {
 	name := filepath.Base(relPath)
 	ext := filepath.Ext(relPath)
 	if !config.NoDefaultIgnore && ignoreFiles[name] {
-		return true
+		return "Default ignore file"
 	}
 	// 敏感文件（.env、私钥、凭据）默认一律排除，防止快照/推送泄露密钥
 	if !config.NoDefaultIgnore && isSensitiveFile(name) {
-		return true
+		return "Sensitive file"
 	}
 	// 用户用 -I/--ignore 追加的忽略模式。
 	//
@@ -769,7 +873,7 @@ func shouldIgnoreFile(relPath string, config Config, matcher *gitignoreMatcher) 
 	// 而用户无法从文档看出这个区别。
 	for _, p := range config.AdditionalIgnores {
 		if matchPattern(relPath, p) {
-			return true
+			return "Ignored by -I/--ignore"
 		}
 	}
 	if len(config.IncludeExts) > 0 {
@@ -781,7 +885,7 @@ func shouldIgnoreFile(relPath string, config Config, matcher *gitignoreMatcher) 
 			}
 		}
 		if !match {
-			return true
+			return "Not in -i/--include"
 		}
 	}
 	if len(config.IncludeMatches) > 0 {
@@ -793,25 +897,25 @@ func shouldIgnoreFile(relPath string, config Config, matcher *gitignoreMatcher) 
 			}
 		}
 		if !match {
-			return true
+			return "Not in -m/--match"
 		}
 	}
 	for _, e := range config.ExcludeExts {
 		if strings.EqualFold(ext, e) {
-			return true
+			return "Excluded by -x/--exclude"
 		}
 	}
 	for _, m := range config.ExcludeMatches {
 		if strings.Contains(relPath, m) {
-			return true
+			return "Excluded by -X/--exclude-match"
 		}
 	}
 	if matcher != nil {
 		if applies, ignore := matcher.ShouldIgnore(relPath, false); applies && ignore {
-			return true
+			return "Ignored by ignore file"
 		}
 	}
-	return false
+	return ""
 }
 
 func isBinaryBuffer(buf []byte) bool {
@@ -1018,6 +1122,12 @@ func generateStatsContent(config Config, files []FileMetadata, stats Stats) stri
 }
 
 func writeContent(config Config, files []FileMetadata, stats Stats, w io.Writer) error {
+	// git 模式（-g / -G）：换成变更快照的排版，但沿用同一批
+	// files/stats（因此 -s / -c / -p / --icloud 全部照旧可用）。
+	if config.changeSet != nil {
+		return writeChangeContent(config, files, stats, config.changeSet, w)
+	}
+
 	bw := bufio.NewWriter(w)
 
 	fmt.Fprintf(bw, "# Project Snapshot: %s\n\n", filepath.Base(config.RootDir))
@@ -1040,55 +1150,9 @@ func writeContent(config Config, files []FileMetadata, stats Stats, w io.Writer)
 
 	for _, f := range files {
 		fmt.Fprintf(bw, "\n## %s\n\n", f.RelPath)
-
-		// Stream file content: small files read once, large files scan + copy
-		var content []byte
-		var readErr error
-		smallLimit := int64(32 * 1024)
-		if f.Size <= smallLimit {
-			content, readErr = os.ReadFile(f.FullPath)
-			if readErr != nil {
-				return fmt.Errorf("reading %s: %w", f.RelPath, readErr)
-			}
-		} else {
-			// Large file: scan backticks via chunked read, then io.Copy
-			maxBacktick, scanErr := scanMaxBackticks(f.FullPath)
-			if scanErr != nil {
-				return fmt.Errorf("scanning %s: %w", f.RelPath, scanErr)
-			}
-			fence := "```"
-			if maxBacktick >= 3 {
-				fence = strings.Repeat("`", maxBacktick+1)
-			}
-			lang := detectLanguage(f.RelPath)
-			fmt.Fprintf(bw, "%s%s\n", fence, lang)
-
-			src, openErr := os.Open(f.FullPath)
-			if openErr != nil {
-				return fmt.Errorf("opening %s: %w", f.RelPath, openErr)
-			}
-			if _, copyErr := io.Copy(bw, src); copyErr != nil {
-				src.Close()
-				return fmt.Errorf("copying %s: %w", f.RelPath, copyErr)
-			}
-			src.Close()
-
-			bw.WriteByte('\n')
-			fmt.Fprintf(bw, "%s\n", fence)
-			continue
+		if err := writeFileBody(bw, f); err != nil {
+			return err
 		}
-		maxBacktick := scanBackticksInData(content)
-		fence := "```"
-		if maxBacktick >= 3 {
-			fence = strings.Repeat("`", maxBacktick+1)
-		}
-		lang := detectLanguage(f.RelPath)
-		fmt.Fprintf(bw, "%s%s\n", fence, lang)
-		bw.Write(content)
-
-		// Ensure trailing newline before closing fence
-		bw.WriteByte('\n')
-		fmt.Fprintf(bw, "%s\n", fence)
 	}
 
 	if config.ShowStats {
@@ -1140,6 +1204,60 @@ func writeContent(config Config, files []FileMetadata, stats Stats, w io.Writer)
 	}
 
 	return bw.Flush()
+}
+
+// writeFileBody 输出一个文件的内容块（不含 Markdown 标题），
+// 全量快照与变更快照共用同一套围栏/流式逻辑。
+func writeFileBody(bw *bufio.Writer, f FileMetadata) error {
+	// Stream file content: small files read once, large files scan + copy
+	var content []byte
+	var readErr error
+	smallLimit := int64(32 * 1024)
+	if f.Size <= smallLimit {
+		content, readErr = os.ReadFile(f.FullPath)
+		if readErr != nil {
+			return fmt.Errorf("reading %s: %w", f.RelPath, readErr)
+		}
+	} else {
+		// Large file: scan backticks via chunked read, then io.Copy
+		maxBacktick, scanErr := scanMaxBackticks(f.FullPath)
+		if scanErr != nil {
+			return fmt.Errorf("scanning %s: %w", f.RelPath, scanErr)
+		}
+		fence := "```"
+		if maxBacktick >= 3 {
+			fence = strings.Repeat("`", maxBacktick+1)
+		}
+		lang := detectLanguage(f.RelPath)
+		fmt.Fprintf(bw, "%s%s\n", fence, lang)
+
+		src, openErr := os.Open(f.FullPath)
+		if openErr != nil {
+			return fmt.Errorf("opening %s: %w", f.RelPath, openErr)
+		}
+		if _, copyErr := io.Copy(bw, src); copyErr != nil {
+			src.Close()
+			return fmt.Errorf("copying %s: %w", f.RelPath, copyErr)
+		}
+		src.Close()
+
+		bw.WriteByte('\n')
+		fmt.Fprintf(bw, "%s\n", fence)
+		return nil
+	}
+	maxBacktick := scanBackticksInData(content)
+	fence := "```"
+	if maxBacktick >= 3 {
+		fence = strings.Repeat("`", maxBacktick+1)
+	}
+	lang := detectLanguage(f.RelPath)
+	fmt.Fprintf(bw, "%s%s\n", fence, lang)
+	bw.Write(content)
+
+	// Ensure trailing newline before closing fence
+	bw.WriteByte('\n')
+	fmt.Fprintf(bw, "%s\n", fence)
+	return nil
 }
 
 // scanMaxBackticks reads a file in 32KB chunks and returns the maximum
@@ -1251,6 +1369,17 @@ func printConfigSummary(c Config) {
 	fmt.Printf("  %-20s %v\n", "Push to remote:", c.Push)
 	if c.Push {
 		fmt.Printf("  %-20s %s\n", "Push URL:", c.PushURL)
+	}
+	if c.gitMode() {
+		if c.GitDiff {
+			fmt.Printf("  %-20s %s\n", "Git diff vs:", c.GitRev)
+			fmt.Printf("  %-20s %v\n", "Staged only:", c.GitStaged)
+		} else {
+			fmt.Printf("  %-20s %d\n", "Git commits:", c.GitLog)
+			fmt.Printf("  %-20s %v\n", "No merges:", c.GitNoMerges)
+		}
+		fmt.Printf("  %-20s %v\n", "Diff only:", c.DiffOnly)
+		fmt.Printf("  %-20s %d\n", "Max diff lines:", c.MaxDiffLines)
 	}
 	fmt.Println()
 }
@@ -1461,5 +1590,15 @@ func pushToRemoteStreaming(config Config, files []FileMetadata, stats Stats) err
 		return writeErr
 	}
 
-	return uploadViaMultipart(config, tmpPath, filepath.Base(config.RootDir)+"_snapshot.md")
+	return uploadViaMultipart(config, tmpPath, artifactBaseName(config)+"_snapshot.md")
+}
+
+// artifactBaseName 远端推送时的文件名前缀。git 模式用 _changes 后缀，
+// 避免变更快照和全量快照在服务端互相覆盖。
+func artifactBaseName(config Config) string {
+	base := filepath.Base(config.RootDir)
+	if config.gitMode() {
+		return base + "_changes"
+	}
+	return base
 }
