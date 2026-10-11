@@ -564,6 +564,33 @@ func TestGitFiltersReuseSnapshotSemantics(t *testing.T) {
 	}
 }
 
+// 未跟踪文件在 git diff 里一行都没有，摘要的 +N 与"总量过大"告警
+// 都得靠数正文行数补上（否则 -g 下一个 3 万行的新文件完全不触发告警）。
+func TestGitUntrackedLinesCountTowardTotals(t *testing.T) {
+	dir := newGitFixture(t)
+	writeFile(t, dir, "tracked.go", "package a\n")
+	gitIn(t, dir, "add", "-A")
+	gitIn(t, dir, "commit", "-q", "-m", "init")
+	writeFile(t, dir, "新文件.md", "l1\nl2\nl3\n")
+
+	cfg := gitConfig(Config{GitDiff: true, MaxDiffLines: 2000}, dir)
+	cs, files, _, _ := collectForTest(t, cfg)
+
+	if cs.UniquePaths != 1 || len(files) != 1 {
+		t.Fatalf("应只有 1 个未跟踪变更，实际 paths=%d files=%d", cs.UniquePaths, len(files))
+	}
+	ch := changeByPath(cs, "新文件.md")
+	if ch == nil || !ch.Untracked || ch.Diff != "" {
+		t.Fatalf("该文件应为无 diff 的未跟踪文件: %+v", ch)
+	}
+	if cs.TotalAdded != 3 || cs.TotalDeleted != 0 {
+		t.Errorf("+%d −%d，期望 +3 −0", cs.TotalAdded, cs.TotalDeleted)
+	}
+	if cs.TotalDiffLines != 3 {
+		t.Errorf("TotalDiffLines = %d，期望 3（未跟踪文件按正文行数计入总量告警）", cs.TotalDiffLines)
+	}
+}
+
 func TestGitDiffOnlyOmitsContentButKeepsUntrackedDiff(t *testing.T) {
 	dir := buildMixedFixture(t)
 	cfg := gitConfig(Config{GitDiff: true, DiffOnly: true, MaxDiffLines: 2000}, dir)

@@ -395,19 +395,13 @@ func collectWorkingTree(g *gitRunner, config *Config, cs *ChangeSet) error {
 
 	chunks := splitPatch(patch)
 	byPath := indexChunks(chunks)
+	changeIndex := indexChanges(changes)
 	for _, ch := range changes {
 		applyChunk(ch, byPath, config.MaxDiffLines)
 		ch.Staged = stagedSet[ch.Path]
 		ch.Unstaged = unstagedSet[ch.Path]
 	}
-	// 兜底：清单里没有但 patch 里出现的文件（理论上不该发生）
-	for _, ck := range chunks {
-		if _, ok := lookupChange(changes, ck.Path); !ok && ck.Path != "" {
-			ch := &Change{Path: ck.Path, Status: "M"}
-			applyChunk(ch, byPath, config.MaxDiffLines)
-			changes = append(changes, ch)
-		}
-	}
+	changes = appendUnmatchedChunks(changes, changeIndex, chunks, byPath, config.MaxDiffLines)
 	for _, p := range untracked {
 		changes = append(changes, &Change{Path: p, Status: "??", Untracked: true})
 	}
@@ -509,16 +503,11 @@ func collectHistory(g *gitRunner, config *Config, cs *ChangeSet) error {
 		}
 		chunks := splitPatch(patch)
 		byPath := indexChunks(chunks)
+		changeIndex := indexChanges(changes)
 		for _, ch := range changes {
 			applyChunk(ch, byPath, config.MaxDiffLines)
 		}
-		for _, ck := range chunks {
-			if _, ok := lookupChange(changes, ck.Path); !ok && ck.Path != "" {
-				ch := &Change{Path: ck.Path, Status: "M"}
-				applyChunk(ch, byPath, config.MaxDiffLines)
-				changes = append(changes, ch)
-			}
-		}
+		changes = appendUnmatchedChunks(changes, changeIndex, chunks, byPath, config.MaxDiffLines)
 		sort.SliceStable(changes, func(i, j int) bool { return changes[i].Path < changes[j].Path })
 		grp.Changes = changes
 	}
@@ -578,29 +567,51 @@ func summarizeChangeSet(cs *ChangeSet) {
 }
 
 // markPaths 把 --name-status -z 输出里的所有路径塞进集合。
-func markPaths(nsOut string, set map[string]bool, withOld bool) {
+//
+// includeOldPath 为真时连重命名的旧路径一起标记：暂存集合来自
+// `git diff --cached`，它报的是 "R100 old new"；而后续 `git diff`
+// （工作区 vs 索引）不会再提 old。若不给旧路径打标记，"已暂存的重命名"
+// 这一侧就会漏掉 staged 标记。
+func markPaths(nsOut string, set map[string]bool, includeOldPath bool) {
 	changes, err := parseNameStatusZ(nsOut)
 	if err != nil {
 		return
 	}
 	for _, ch := range changes {
 		set[ch.Path] = true
-		if withOld && ch.OldPath != "" {
+		if includeOldPath && ch.OldPath != "" {
 			set[ch.OldPath] = true
 		}
 	}
 }
 
-func lookupChange(changes []*Change, path string) (*Change, bool) {
-	if path == "" {
-		return nil, false
-	}
+// indexChanges 建立 path → Change 索引。兜底逻辑要按路径查重，
+// 线性扫在 -G 50 那种量级下是 O(块 × 变更)，没必要。
+func indexChanges(changes []*Change) map[string]*Change {
+	m := make(map[string]*Change, len(changes))
 	for _, ch := range changes {
-		if ch.Path == path {
-			return ch, true
-		}
+		m[ch.Path] = ch
 	}
-	return nil, false
+	return m
+}
+
+// appendUnmatchedChunks 是防御性兜底：patch 里出现、但 --name-status
+// 清单里没有的文件也要输出，否则会静默丢内容（正常情况下不该发生，
+// 例如 git 版本差异导致两侧排序不一致时）。
+func appendUnmatchedChunks(changes []*Change, index map[string]*Change, chunks []patchChunk, byPath map[string]*patchChunk, maxDiffLines int) []*Change {
+	for _, ck := range chunks {
+		if ck.Path == "" {
+			continue
+		}
+		if _, ok := index[ck.Path]; ok {
+			continue
+		}
+		ch := &Change{Path: ck.Path, Status: "M"}
+		applyChunk(ch, byPath, maxDiffLines)
+		changes = append(changes, ch)
+		index[ck.Path] = ch
+	}
+	return changes
 }
 
 // ============================================================
@@ -702,7 +713,8 @@ func splitPatch(patch string) []patchChunk {
 				cur.Path = p
 			}
 		case strings.HasPrefix(ln, "--- "):
-			// 保留给删除类 diff 兜底，正常由 `+++`/name-status 决定
+			// 删除类 diff 没有可用的 `+++` 行（它是 `+++ /dev/null`，解析成空），
+			// 所以这里兜一次底；其余情况由 `+++` / name-status 决定。
 			if cur.Path == "" {
 				if p := parseDiffPath(ln[4:]); p != "" {
 					cur.Path = p

@@ -506,7 +506,7 @@ func initFlags(fs *pflag.FlagSet) {
 		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
 		fs.PrintDefaults()
 		fmt.Fprintln(os.Stderr, "\nConvenience shortcuts:")
-		fmt.Fprintln(os.Stderr, "  -a              Include all files (disable ignores, no .gitignore)")
+		fmt.Fprintln(os.Stderr, "  -a              Include all files (disable .gitignore + built-in ignores; .gdignore still applies)")
 		fmt.Fprintln(os.Stderr, "\nCombinations:")
 		fmt.Fprintln(os.Stderr, "  -s -p           Show stats and push stats-only markdown to remote")
 		fmt.Fprintln(os.Stderr, "  -c -p           Not supported (-c takes priority)")
@@ -552,7 +552,7 @@ func parseFlagsInto(fs *pflag.FlagSet, args []string) Config {
 	fs.StringVarP(&c.PushURL, "push-url", "u", "", "Remote URL for push (e.g. https://host/submit). Overrides SOURCEPACK_PUSH_URL env")
 	fs.StringVar(&c.AuthKey, "auth-key", "", "X-Auth-Key for push auth (or env SOURCEPACK_AUTH_KEY)")
 	fs.BoolVar(&c.ICloud, "icloud", false, "Save output to iCloud Documents folder")
-	fs.BoolVarP(&c.All, "all", "a", false, "Include all files (disable all ignore rules)")
+	fs.BoolVarP(&c.All, "all", "a", false, "Include all files (disable .gitignore + built-in ignores; .gdignore still applies)")
 
 	// --- Git 变更打包（与上面的筛选/输出参数正交，可自由组合）---
 	fs.BoolVarP(&c.GitDiff, "git-diff", "g", false, "Package uncommitted changes: working tree + index vs --rev (default HEAD)")
@@ -602,6 +602,10 @@ func parseFlagsInto(fs *pflag.FlagSet, args []string) Config {
 }
 
 // validateConfig 校验参数组合。宁可明确报错，也不要静默忽略用户给错的参数。
+//
+// fs 必须是"解析这组参数时用的那个 FlagSet"：--rev / --diff-only / -n
+// 在 git 模式下的含义要靠 fs.Changed() 区分"用户显式给了"与"取了默认值"，
+// 传一个干净的 FlagSet 会漏报。
 func validateConfig(c Config, fs *pflag.FlagSet) error {
 	if c.GitDiff && c.GitLog > 0 {
 		return fmt.Errorf("-g/--git-diff and -G/--commits are mutually exclusive (pick one)")

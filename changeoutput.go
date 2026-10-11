@@ -48,85 +48,107 @@ func buildChangeFiles(config *Config, cs *ChangeSet) ([]FileMetadata, Stats, []S
 		}
 	}
 
-	// 每个路径只读一次正文（-G 模式下同一文件可能出现在多个提交里），
+	// 一次遍历建立 path → 该路径最后一次出现的 Change 的索引：
+	// -G 下同一文件可能出现在多个提交里，正文只读一次（取最新那次），
 	// 但过滤/无正文的标记要打到该路径的每一处出现上。
+	// （原来是每处理一个路径就把整个 changeset 线性扫一遍，O(路径 × 变更)。）
+	lastByPath := make(map[string]*Change, 32)
 	var order []string
-	seen := map[string]bool{}
 	for _, grp := range cs.Commits {
 		for _, ch := range grp.Changes {
-			if !seen[ch.Path] {
-				seen[ch.Path] = true
+			if _, ok := lastByPath[ch.Path]; !ok {
 				order = append(order, ch.Path)
 			}
+			lastByPath[ch.Path] = ch
 		}
 	}
 
 	filteredReason := map[string]string{}
 	noContent := map[string]string{}
+	var skipped []SkippedFile
+	var filtered []SkippedFile
 	for _, p := range order {
+		ch := lastByPath[p]
+
+		reason := ""
 		if p == outRel {
-			filteredReason[p] = "Sourcepack output file"
+			reason = "Sourcepack output file"
+		} else {
+			reason = changeFilterReason(p, *config, matcher)
+		}
+		if reason != "" {
+			// 被规则排除的既要进"排除清单"，也要进 skipped（-v / --dry-run 会打印）
+			filteredReason[p] = reason
+			entry := SkippedFile{RelPath: p, Reason: reason}
+			filtered = append(filtered, entry)
+			skipped = append(skipped, entry)
 			continue
 		}
-		if r := changeFilterReason(p, *config, matcher); r != "" {
-			filteredReason[p] = r
-			continue
-		}
+
 		full := filepath.Join(cs.RepoRoot, filepath.FromSlash(p))
 		info, err := os.Stat(full)
 		if err != nil {
 			noContent[p] = "Not in working tree"
-			continue
-		}
-		if info.IsDir() {
+		} else if info.IsDir() {
 			noContent[p] = "Submodule or directory"
-			continue
-		}
-		if info.Size() > config.MaxFileSize {
+		} else if info.Size() > config.MaxFileSize {
 			noContent[p] = "Size limit"
-			continue
-		}
-		// git 自己已经判定过二进制（看文件头 8000 字节里有没有 NUL），
-		// 它的判断比我们"UTF-8 合法性"那套更准，优先采信。
-		if lc := lastChange(cs, p); lc != nil && lc.Binary {
+		} else if ch != nil && ch.Binary {
+			// git 自己已经判定过二进制（看文件头 8000 字节里有没有 NUL），
+			// 它的判断比我们"UTF-8 合法性"那套更准，优先采信。
 			noContent[p] = "Binary file"
-			continue
-		}
-		lineCount, isBinary, serr := scanFileStats(full, !isKnownTextFile(p))
-		if serr != nil {
-			noContent[p] = "Read error"
-			continue
-		}
-		if isBinary {
-			noContent[p] = "Binary file"
-			continue
-		}
-		fm := FileMetadata{RelPath: p, FullPath: full, Size: info.Size(), LineCount: lineCount}
-		files = append(files, fm)
-		accumulateStats(&stats, fm, int(info.Size()/4))
+		} else {
+			lineCount, isBinary, serr := scanFileStats(full, !isKnownTextFile(p))
+			switch {
+			case serr != nil:
+				noContent[p] = "Read error"
+			case isBinary:
+				noContent[p] = "Binary file"
+			default:
+				fm := FileMetadata{RelPath: p, FullPath: full, Size: info.Size(), LineCount: lineCount}
+				files = append(files, fm)
+				accumulateStats(&stats, fm, int(info.Size()/4))
 
-		// 未跟踪文件在 git diff 里是一行都没有的，摘要里的 +N 得靠数正文。
-		if lc := lastChange(cs, p); lc != nil && lc.Untracked && lc.Diff == "" && lc.Added == 0 {
-			lc.Added = lineCount
-		}
-
-		// --diff-only 下未跟踪文件没有任何 git diff 可用，
-		// 这里补一个 git 风格的"新增文件"补丁，否则新文件会凭空消失。
-		if config.DiffOnly {
-			if ch := lastChange(cs, p); ch != nil && ch.Untracked && ch.Diff == "" {
-				if content, rerr := os.ReadFile(full); rerr == nil {
-					diff, total, omitted := syntheticNewFileDiff(p, content, config.MaxDiffLines)
-					ch.Diff = diff
-					ch.DiffFull = total
-					ch.DiffOmitted = omitted
-					ch.Added = total
+				if ch != nil && ch.Untracked && ch.Diff == "" {
+					// 未跟踪文件在 git diff 里一行都没有：摘要里的 +N 与总量
+					// 告警都只能靠数正文（--diff-only 下由合成补丁填）。
+					ch.Added = lineCount
+					ch.DiffFull = lineCount
 				}
 			}
 		}
+
+		if nc := noContent[p]; nc != "" {
+			skipped = append(skipped, SkippedFile{RelPath: p, Reason: nc})
+		}
 	}
 
-	var skipped []SkippedFile
-	var filtered []SkippedFile
+	// 未跟踪文件在 --diff-only 下没有任何 git diff 可用，
+	// 这里补一个 git 风格的"新增文件"补丁，否则新文件会凭空消失。
+	if config.DiffOnly {
+		for _, p := range order {
+			if filteredReason[p] != "" {
+				continue
+			}
+			ch := lastByPath[p]
+			if ch == nil || !ch.Untracked || ch.Diff != "" {
+				continue
+			}
+			content, rerr := os.ReadFile(filepath.Join(cs.RepoRoot, filepath.FromSlash(p)))
+			if rerr != nil {
+				continue
+			}
+			diff, total, omitted := syntheticNewFileDiff(p, content, config.MaxDiffLines)
+			ch.Diff = diff
+			ch.DiffFull = total
+			ch.DiffOmitted = omitted
+			ch.Added = total
+		}
+		// 正文本来就不输出，没必要把"无正文"当成跳过报出来
+		skipped = filtered
+	}
+
+	// 标记要打到该路径的每一处出现上（-G 下一个文件会出现多次）
 	for _, grp := range cs.Commits {
 		for _, ch := range grp.Changes {
 			if r := filteredReason[ch.Path]; r != "" {
@@ -137,18 +159,6 @@ func buildChangeFiles(config *Config, cs *ChangeSet) ([]FileMetadata, Stats, []S
 			}
 		}
 	}
-	for _, p := range order {
-		if r := filteredReason[p]; r != "" {
-			filtered = append(filtered, SkippedFile{RelPath: p, Reason: r})
-			skipped = append(skipped, SkippedFile{RelPath: p, Reason: r})
-		} else if nc := noContent[p]; nc != "" {
-			skipped = append(skipped, SkippedFile{RelPath: p, Reason: nc})
-		}
-	}
-	if config.DiffOnly {
-		// 正文本来就不输出，没必要把"无正文"当成跳过报出来
-		skipped = filtered
-	}
 
 	cs.Excluded = filtered
 	sort.Slice(filtered, func(i, j int) bool { return filtered[i].RelPath < filtered[j].RelPath })
@@ -157,18 +167,6 @@ func buildChangeFiles(config *Config, cs *ChangeSet) ([]FileMetadata, Stats, []S
 	// 过滤结果会影响统计，标记完成后重算一次
 	summarizeChangeSet(cs)
 	return files, stats, skipped
-}
-
-func lastChange(cs *ChangeSet, path string) *Change {
-	var found *Change
-	for _, grp := range cs.Commits {
-		for _, ch := range grp.Changes {
-			if ch.Path == path {
-				found = ch
-			}
-		}
-	}
-	return found
 }
 
 // realPathOrSelf 取真实路径（解析符号链接）；失败时原样返回。
@@ -225,7 +223,7 @@ func printChangeSetTerminal(cs *ChangeSet) {
 		fmt.Printf("  ⚠ %s\n", wn)
 	}
 	if cs.TotalDiffLines > warnDiffLines {
-		fmt.Printf("  ⚠ %d diff lines total — consider --diff-only or --max-diff-lines\n", cs.TotalDiffLines)
+		fmt.Printf("  ⚠ %d changed lines (diffs + new files) — consider --diff-only or --max-diff-lines\n", cs.TotalDiffLines)
 	}
 	fmt.Println()
 }
@@ -258,7 +256,7 @@ func writeChangeContent(config Config, files []FileMetadata, stats Stats, cs *Ch
 		fmt.Fprintln(bw)
 	}
 	if cs.TotalDiffLines > warnDiffLines {
-		fmt.Fprintf(bw, "> ⚠ %d diff lines total — this snapshot is large; consider `--diff-only` or a lower `--max-diff-lines`.\n\n", cs.TotalDiffLines)
+		fmt.Fprintf(bw, "> ⚠ %d changed lines total (diffs + new-file content) — this snapshot is large; consider `--diff-only` or a lower `--max-diff-lines`.\n\n", cs.TotalDiffLines)
 	}
 
 	// ---- Repository ----

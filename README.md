@@ -225,7 +225,8 @@ gx -G 1 --diff-only -c    # 只把最后一个提交的 diff 复制到剪贴板
 | 二进制文件 | git 的判定优先；只列清单，不出正文，diff 仍是 git 原样的 `Binary files ... differ` |
 | 删除的文件 | 保留 diff；正文标注 `Full content omitted: Not in working tree` |
 | 中文 / 空格文件名 | `-c core.quotepath=false`，原样 UTF-8；diff 头里的尾 TAB 会被正确剥离 |
-| 大 diff | 单文件默认截断到 `--max-diff-lines 2000` 行并标注；总量超 2 万行时终端与文档都会警告 |
+| 大 diff | 单文件默认截断到 `--max-diff-lines 2000` 行并标注；变更总行数（diff + 新文件正文）超 2 万行时终端与文档都会警告 |
+| 未跟踪文件的行数 | git diff 里没有它，所以 `+N` 与总量告警按文件正文行数计入 |
 | 超过 64 MB 的 diff | 在最后一个完整文件边界处截断并标注 |
 
 > **安全**：`.env`、`id_rsa`、`.npmrc`、`.git-credentials` 等敏感文件沿用全量
