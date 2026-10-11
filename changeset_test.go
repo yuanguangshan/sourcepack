@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -255,6 +257,23 @@ func TestFormatHelpers(t *testing.T) {
 	}
 }
 
+// git 允许路径含换行，原样输出会破坏 Markdown（inline code / 表格）
+func TestMdCodeEscapesControlChars(t *testing.T) {
+	if got := mdCode("src/main.go"); got != "`src/main.go`" {
+		t.Errorf("普通路径 = %q", got)
+	}
+	if got := mdCode("a\nb.txt"); got != "`a\\nb.txt`" {
+		t.Errorf("含换行路径应转义后内联，实际 %q", got)
+	}
+	if got := mdCode("x\ty"); !strings.Contains(got, "\\t") {
+		t.Errorf("含制表符路径应转义，实际 %q", got)
+	}
+	// 含反引号时无法内联，但换行必须已被转义
+	if got := mdCode("we`ird\nname"); strings.ContainsRune(got, '\n') {
+		t.Errorf("含反引号 + 换行的路径不能把换行原样输出: %q", got)
+	}
+}
+
 // ============================================================
 //  参数解析与组合校验
 // ============================================================
@@ -363,6 +382,9 @@ func gitIn(t *testing.T, dir string, args ...string) string {
 		"GIT_AUTHOR_NAME=T", "GIT_AUTHOR_EMAIL=t@t.c",
 		"GIT_COMMITTER_NAME=T", "GIT_COMMITTER_EMAIL=t@t.c",
 		"GIT_CONFIG_NOSYSTEM=1",
+		// 隔离用户级配置：CI/本机若有 diff.external、core.autocrlf、
+		// commit.gpgsign 之类会污染断言（os.DevNull 跨平台）。
+		"GIT_CONFIG_GLOBAL="+os.DevNull,
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -794,6 +816,134 @@ func TestChangeOutputIsValidUTF8AndNULFree(t *testing.T) {
 		if !utf8.ValidString(out) {
 			t.Errorf("diff-only=%v: 产物不是合法 UTF-8", diffOnly)
 		}
+		// 含裸字节的 diff 正文被丢弃后就不该再计入"变更总量过大"告警
+		if ch := changeByPath(cs, "tracked_nonul.dat"); ch == nil || !ch.Binary || ch.Diff != "" || ch.DiffFull != 0 {
+			t.Errorf("diff-only=%v: 含裸字节的 diff 应丢弃且 DiffFull=0，实际 %+v", diffOnly, ch)
+		}
+	}
+}
+
+// --staged 的清单来自 git diff --cached，每条都该标 staged。
+// 旧实现只在非 --staged 时填 stagedSet，导致 StagedCount 恒为 0：
+// 文档头部写着 "staged 0 · unstaged 0 · untracked 0"，下面却列着一堆变更。
+func TestGitStagedModeMarksEveryChangeStaged(t *testing.T) {
+	dir := buildMixedFixture(t)
+	cfg := gitConfig(Config{GitDiff: true, GitStaged: true, MaxDiffLines: 2000}, dir)
+	cs, files, stats, _ := collectForTest(t, cfg)
+
+	if len(cs.Commits) != 1 {
+		t.Fatalf("应有 1 组变更，实际 %d", len(cs.Commits))
+	}
+	changes := cs.Commits[0].Changes
+	if len(changes) == 0 {
+		t.Fatal("--staged 应当有变更")
+	}
+	if cs.StagedCount != len(changes) {
+		t.Errorf("StagedCount = %d，期望 %d（--staged 下每条都是暂存的）", cs.StagedCount, len(changes))
+	}
+	if cs.UnstagedCount != 0 || cs.UntrackedCount != 0 {
+		t.Errorf("--staged 下不该有 unstaged/untracked 计数: %d/%d", cs.UnstagedCount, cs.UntrackedCount)
+	}
+	for _, ch := range changes {
+		if !ch.Staged || ch.Unstaged {
+			t.Errorf("--staged 下 %s 的标记不对: staged=%v unstaged=%v", ch.Path, ch.Staged, ch.Unstaged)
+		}
+		if ch.Untracked {
+			t.Errorf("--staged 不该包含未跟踪文件: %s", ch.Path)
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := writeChangeContent(cfg, files, stats, cs, &buf); err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("- Index/worktree: staged %d · unstaged 0 · untracked 0", len(changes))
+	if !strings.Contains(buf.String(), want) {
+		t.Errorf("文档头部计数不对，期望含 %q", want)
+	}
+}
+
+// -h 由我们自己处理：pflag 的内置 help 在 ExitOnError 下会打印
+// "pflag: help requested" 并以 2 退出，而且自定义说明整段丢失。
+func TestHelpFlagAndUsageText(t *testing.T) {
+	fs := newTestFlagSet()
+	c := parseFlagsInto(fs, []string{"-h"})
+	if !c.Help {
+		t.Fatal("-h 应设置 Help")
+	}
+	if c.gitMode() {
+		t.Error("-h 不该触发 git 模式")
+	}
+	if err := validateConfig(c, fs); err != nil {
+		t.Errorf("-h 不该触发校验错误: %v", err)
+	}
+
+	var buf bytes.Buffer
+	printUsage(&buf, fs)
+	out := buf.String()
+	for _, want := range []string{
+		"Usage of", "-g, --git-diff", "-h, --help",
+		"Convenience shortcuts:", "Combinations:", "Environment variables:",
+		"SOURCEPACK_PUSH_URL",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("用法说明缺少 %q", want)
+		}
+	}
+}
+
+// pflag 的 (*FlagSet).usage() 在 f == CommandLine 时调的是包级 pflag.Usage；
+// 只设 fs.Usage 会让自定义说明丢失（v1.8 重构踩过这个分叉）。
+func TestUsageWiredForCommandLine(t *testing.T) {
+	initFlags(pflag.CommandLine)
+	oldUsage := pflag.Usage
+	defer func() { pflag.Usage = oldUsage }()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStderr := os.Stderr
+	os.Stderr = w
+	pflag.Usage()
+	os.Stderr = oldStderr
+	w.Close()
+	data, _ := io.ReadAll(r)
+	r.Close()
+
+	out := string(data)
+	for _, want := range []string{"Convenience shortcuts:", "Combinations:", "Environment variables:"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("pflag.Usage 输出缺少 %q，说明包级 Usage 没被替换", want)
+		}
+	}
+}
+
+// 参数解析失败不能被静默吞掉（ContinueOnError 的 FlagSet 会返回 error）
+func TestParseFlagsIntoKeepsParseError(t *testing.T) {
+	fs := newTestFlagSet()
+	fs.SetOutput(io.Discard)
+	c := parseFlagsInto(fs, []string{"--no-such-flag"})
+	if c.parseErr == nil {
+		t.Fatal("参数写错时 parseErr 应非空（以前被静默吞掉、拿到零值 Config）")
+	}
+	err := validateConfig(c, fs)
+	if err == nil || !strings.Contains(err.Error(), "invalid arguments") {
+		t.Errorf("validateConfig 应把解析错误抛出来，实际 %v", err)
+	}
+}
+
+func TestArtifactBaseName(t *testing.T) {
+	if got := artifactBaseName(Config{RootDir: "/tmp/some-repo"}); got != "some-repo" {
+		t.Errorf("快照模式 = %q", got)
+	}
+	for _, cfg := range []Config{
+		{RootDir: "/tmp/some-repo", GitDiff: true},
+		{RootDir: "/tmp/some-repo", GitLog: 3},
+	} {
+		if got := artifactBaseName(cfg); got != "some-repo_changes" {
+			t.Errorf("git 模式 = %q，期望 some-repo_changes（否则会覆盖快照模式的 stats/快照）", got)
+		}
 	}
 }
 
@@ -947,6 +1097,31 @@ func TestGitNotARepository(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := collectChangeSet(&Config{RootDir: dir, GitDiff: true, MaxDiffLines: 2000}); err == nil {
 		t.Skip("临时目录意外处于某个 git 仓库内，跳过")
+	}
+}
+
+// runLimited 曾经在截断时吞掉 waitErr（`if waitErr != nil && !clipped`）。
+// 用 `git diff --exit-code` 造出"输出超限 + 退出码非 0"的组合：有差异时它输出
+// 整份 diff 并以 1 退出。
+func TestRunLimitedSurfacesFailureEvenWhenClipped(t *testing.T) {
+	dir := newGitFixture(t)
+	writeFile(t, dir, "a.txt", strings.Repeat("line\n", 50))
+	gitIn(t, dir, "add", "-A")
+	gitIn(t, dir, "commit", "-q", "-m", "init")
+	writeFile(t, dir, "a.txt", strings.Repeat("changed\n", 50))
+
+	g := newGitRunner(dir)
+	_, clipped, err := g.runLimited(16, "diff", "--exit-code", "HEAD")
+	if !clipped {
+		t.Fatal("应当触发截断，否则测不到这条路径")
+	}
+	if err == nil {
+		t.Error("截断时 git 失败仍必须报错，不能静默吞掉")
+	}
+
+	// 对照：正常命令不该被当成失败
+	if _, _, err := g.runLimited(1<<20, "rev-parse", "HEAD"); err != nil {
+		t.Errorf("正常命令不该报错: %v", err)
 	}
 }
 

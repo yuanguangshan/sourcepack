@@ -225,12 +225,14 @@ func (g *gitRunner) runLimited(limit int, args ...string) (string, bool, error) 
 	// 必须把剩余输出排干，否则子进程可能阻塞在写管道上导致 Wait 挂死。
 	_, _ = io.Copy(io.Discard, stdout)
 	waitErr := cmd.Wait()
-	if waitErr != nil && !clipped {
+	// clipped 时同样要报错：上面已经把管道排干，子进程不会因为我们停止读取
+	// 而被 SIGPIPE 杀掉，所以此刻的 waitErr 一定是 git 自己失败了——不能吞。
+	if waitErr != nil {
 		msg := strings.TrimSpace(errBuf.String())
 		if msg == "" {
 			msg = waitErr.Error()
 		}
-		return string(data), false, fmt.Errorf("git %s failed: %s", strings.Join(args, " "), msg)
+		return string(data), clipped, fmt.Errorf("git %s failed: %s", strings.Join(args, " "), msg)
 	}
 	if readErr != nil && readErr != io.EOF {
 		return string(data), clipped, readErr
@@ -407,6 +409,15 @@ func collectWorkingTree(g *gitRunner, config *Config, cs *ChangeSet) error {
 		changes = append(changes, &Change{Path: p, Status: "??", Untracked: true})
 	}
 
+	if config.GitStaged {
+		// --staged 的清单本身就来自 `git diff --cached`，每一条都是暂存的。
+		// 上面的 stagedSet 只在非 --staged 时才填充，所以这里必须显式标，
+		// 否则 summarizeChangeSet 的 switch 全落空、StagedCount 恒为 0。
+		for _, ch := range changes {
+			ch.Staged = true
+		}
+	}
+
 	sort.SliceStable(changes, func(i, j int) bool { return changes[i].Path < changes[j].Path })
 
 	subject := "uncommitted changes"
@@ -501,6 +512,7 @@ func collectHistory(g *gitRunner, config *Config, cs *ChangeSet) error {
 		if clipped {
 			patch = trimToLastCompleteChunk(patch)
 			cs.PatchClipped = true
+			cs.Warnings = append(cs.Warnings, "diff output exceeded 64 MB and was truncated at a file boundary")
 		}
 		chunks := splitPatch(patch)
 		byPath := indexChunks(chunks)
@@ -879,13 +891,14 @@ func applyChunk(ch *Change, byPath map[string]*patchChunk, maxLines int, maxByte
 		return
 	}
 	ch.Added, ch.Deleted, ch.Binary = ck.Added, ck.Deleted, ck.Binary
-	ch.DiffFull = strings.Count(ck.Body, "\n")
 
 	if diffBodyLooksBinary(ck.Body) {
-		// 不出正文，只保留清单与状态（渲染层会写 "Binary file"）
+		// 不出正文，只保留清单与状态（渲染层会写 "Binary file"）。
+		// DiffFull 保持 0：这段正文不会进产物，"总量过大"告警不该算它。
 		ch.Binary = true
 		return
 	}
+	ch.DiffFull = strings.Count(ck.Body, "\n")
 	if trimmed, omitted := capDiff(ck.Body, maxLines, maxBytes); omitted > 0 {
 		ch.Diff = trimmed
 		ch.DiffOmitted = omitted
@@ -956,13 +969,16 @@ func capDiffBytes(body string, maxBytes int64) (string, int) {
 		used += add
 		kept++
 	}
+	// 返回的 omitted 兼作"正文被改过吗"的标记（调用方只在 omitted > 0 时
+	// 采用截断结果）。单行硬切时该行只保留一部分，按"整行丢弃数"是 0，
+	// 但必须让调用方知道正文变了，所以记 1；标注文案里仍用真实行数。
 	omitted := len(lines) - kept
 	if cutMidLine {
-		omitted++
+		omitted = 1
 	}
 	switch {
 	case cutMidLine:
-		fmt.Fprintf(&b, "... [sourcepack] diff truncated at %d KB (fewer than one line kept); %d further lines omitted\n", maxBytes/1024, len(lines)-kept)
+		fmt.Fprintf(&b, "... [sourcepack] diff truncated at %d KB (first line exceeds the limit); %d further lines omitted\n", maxBytes/1024, len(lines)-kept)
 	case omitted > 0:
 		fmt.Fprintf(&b, "... [sourcepack] %d of %d diff lines omitted (--max-size %d KB)\n", omitted, len(lines), maxBytes/1024)
 	}

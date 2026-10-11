@@ -71,6 +71,12 @@ type Config struct {
 	GitNoMerges  bool   // --no-merges：-G 时排除合并提交
 	DiffOnly     bool   // --diff-only：只输出 diff，不输出变更文件全文
 	MaxDiffLines int    // --max-diff-lines：单文件 diff 行数上限（0 = 不限）
+	Help         bool   // -h / --help
+
+	// parseErr 记录参数解析失败（只会在 ContinueOnError 的 FlagSet 上出现，
+	// 生产路径的 pflag.CommandLine 是 ExitOnError，出错时已自行退出）。
+	// 由 validateConfig 负责把它抛出来，避免单测里参数写错被静默吞掉。
+	parseErr error
 
 	// changeSet 由 run() 在 git 模式下填充，供 writeContent 分支渲染。
 	changeSet *ChangeSet
@@ -357,6 +363,13 @@ func matchPattern(path, pattern string) bool {
 func main() {
 	config := parseFlags()
 
+	if config.Help {
+		// 自己处理 -h：pflag 的内置 help 会走 ErrHelp，在 ExitOnError 下
+		// 打印 "pflag: help requested" 并以 2 退出；这里给出正常的 0 退出。
+		printUsage(os.Stdout, pflag.CommandLine)
+		return
+	}
+
 	if config.Version {
 		fmt.Printf("sourcepack %s\n", versionStr)
 		return
@@ -495,18 +508,31 @@ func run(config Config) error {
 	return nil
 }
 
+// printUsage 打印用法说明：pflag 的 flag 列表 + 三段项目自己的说明。
+//
+// pflag 1.0.5 没有导出 Output()，只能把输出目标设回来（nil = 默认 stderr）。
+func printUsage(w io.Writer, fs *pflag.FlagSet) {
+	fs.SetOutput(w)
+	defer fs.SetOutput(nil)
+
+	fmt.Fprintf(w, "Usage of %s:\n", os.Args[0])
+	fs.PrintDefaults()
+	fmt.Fprintln(w, "\nConvenience shortcuts:")
+	fmt.Fprintln(w, "  -a              Include all files (disable .gitignore + built-in ignores; .gdignore still applies)")
+	fmt.Fprintln(w, "\nCombinations:")
+	fmt.Fprintln(w, "  -s -p           Show stats and push stats-only markdown to remote")
+	fmt.Fprintln(w, "  -c -p           Not supported (-c takes priority)")
+	fmt.Fprintf(w, "\nEnvironment variables:\n")
+	fmt.Fprintf(w, "  SOURCEPACK_PUSH_URL    Remote URL for push (e.g. https://host/submit)\n")
+	fmt.Fprintf(w, "  SOURCEPACK_AUTH_KEY    X-Auth-Key for push authentication\n")
+}
+
 func initFlags(fs *pflag.FlagSet) {
-	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
-		fs.PrintDefaults()
-		fmt.Fprintln(os.Stderr, "\nConvenience shortcuts:")
-		fmt.Fprintln(os.Stderr, "  -a              Include all files (disable .gitignore + built-in ignores; .gdignore still applies)")
-		fmt.Fprintln(os.Stderr, "\nCombinations:")
-		fmt.Fprintln(os.Stderr, "  -s -p           Show stats and push stats-only markdown to remote")
-		fmt.Fprintln(os.Stderr, "  -c -p           Not supported (-c takes priority)")
-		fmt.Fprintf(os.Stderr, "\nEnvironment variables:\n")
-		fmt.Fprintf(os.Stderr, "  SOURCEPACK_PUSH_URL    Remote URL for push (e.g. https://host/submit)\n")
-		fmt.Fprintf(os.Stderr, "  SOURCEPACK_AUTH_KEY    X-Auth-Key for push authentication\n")
+	fs.Usage = func() { printUsage(os.Stderr, fs) }
+	if fs == pflag.CommandLine {
+		// (*FlagSet).usage() 在 f == CommandLine 时调的是**包级** pflag.Usage，
+		// 只设 fs.Usage 会让上面这段自定义说明整段丢失（v1.8 重构踩过）。
+		pflag.Usage = fs.Usage
 	}
 }
 
@@ -545,6 +571,7 @@ func parseFlagsInto(fs *pflag.FlagSet, args []string) Config {
 	fs.BoolVarP(&c.Push, "push", "p", false, "Push output to remote (requires --push-url or SOURCEPACK_PUSH_URL env)")
 	fs.StringVarP(&c.PushURL, "push-url", "u", "", "Remote URL for push (e.g. https://host/submit). Overrides SOURCEPACK_PUSH_URL env")
 	fs.StringVar(&c.AuthKey, "auth-key", "", "X-Auth-Key for push auth (or env SOURCEPACK_AUTH_KEY)")
+	fs.BoolVarP(&c.Help, "help", "h", false, "Show this help")
 	fs.BoolVar(&c.ICloud, "icloud", false, "Save output to iCloud Documents folder")
 	fs.BoolVarP(&c.All, "all", "a", false, "Include all files (disable .gitignore + built-in ignores; .gdignore still applies)")
 
@@ -557,7 +584,12 @@ func parseFlagsInto(fs *pflag.FlagSet, args []string) Config {
 	fs.BoolVar(&c.DiffOnly, "diff-only", false, "With -g/-G: emit diffs only, no full file contents")
 	fs.IntVar(&c.MaxDiffLines, "max-diff-lines", 2000, "With -g/-G: max diff lines kept per file (0 = unlimited)")
 
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		// ExitOnError 的 CommandLine 在出错时已退出；能走到这里说明是
+		// ContinueOnError 的 FlagSet（单测）。错误记下来交给 validateConfig，
+		// 否则参数写错会静默拿到一份零值 Config。
+		c.parseErr = err
+	}
 
 	if c.PushURL == "" {
 		c.PushURL = os.Getenv("SOURCEPACK_PUSH_URL")
@@ -601,6 +633,9 @@ func parseFlagsInto(fs *pflag.FlagSet, args []string) Config {
 // 在 git 模式下的含义要靠 fs.Changed() 区分"用户显式给了"与"取了默认值"，
 // 传一个干净的 FlagSet 会漏报。
 func validateConfig(c Config, fs *pflag.FlagSet) error {
+	if c.parseErr != nil {
+		return fmt.Errorf("invalid arguments: %w", c.parseErr)
+	}
 	if c.GitDiff && c.GitLog > 0 {
 		return fmt.Errorf("-g/--git-diff and -G/--commits are mutually exclusive (pick one)")
 	}
@@ -1570,7 +1605,7 @@ func pushStatsToRemote(config Config, files []FileMetadata, stats Stats) error {
 	}
 	tmp.Close()
 
-	return uploadViaMultipart(config, tmpPath, filepath.Base(config.RootDir)+"_stats.md")
+	return uploadViaMultipart(config, tmpPath, artifactBaseName(config)+"_stats.md")
 }
 
 // ============================================================

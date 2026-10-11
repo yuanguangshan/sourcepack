@@ -578,15 +578,44 @@ func writeRenameList(bw *bufio.Writer, cs *ChangeSet) {
 	}
 }
 
-// mdCode 用反引号包住路径；路径里本身有反引号/换行时原样输出更安全。
+// mdCode 用反引号包住路径；控制字符先转成可见转义。
+//
+// git 允许路径含换行（unquoteGitPath 会把 \n 还原回来），原样输出会把
+// Markdown 结构（尤其是 inline code 与表格）截断。
 func mdCode(s string) string {
 	if s == "" {
 		return ""
 	}
-	if strings.ContainsAny(s, "`\n") {
+	s = escapeControlForInline(s)
+	if strings.ContainsRune(s, '`') {
+		// 反引号在 Markdown 里无法内联转义，退化为纯文本；
+		// 此时控制字符已经转义，不会破坏结构
 		return s
 	}
 	return "`" + s + "`"
+}
+
+// escapeControlForInline 把换行/制表/控制字符转成可见的转义写法。
+func escapeControlForInline(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '\n':
+			b.WriteString("\\n")
+		case '\r':
+			b.WriteString("\\r")
+		case '\t':
+			b.WriteString("\\t")
+		default:
+			if r < 0x20 || r == 0x7f {
+				fmt.Fprintf(&b, "\\x%02x", r)
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	return b.String()
 }
 
 // mdCell 转义 Markdown 表格单元里的竖线与换行。

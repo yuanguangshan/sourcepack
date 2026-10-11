@@ -478,6 +478,49 @@ UTF-8 → 二进制**；探测窗口 1024 → 8000 字节（与 git 对齐）。
 2. `--max-size` 在变更模式下**同时限制单文件 diff 的字节数**（默认 500KB）。
 3. `-a` 只关忽略规则，不打开二进制 gate（二进制文件永远不出正文）。
 
+### 第二批（同日晚）：两个**已发布**版本里的用户可见 bug
+
+这两条都在 `v1.8.0`（npm 上的当前版本）里，不是未发布改动引入的：
+
+**1. `--staged` 的计数恒为 0。** 终端与文档写着
+`staged 0 · unstaged 0 · untracked 0`，下面却列着一堆变更——因为
+`collectWorkingTree` 只在非 `--staged` 时填 `stagedSet`，而 `--staged` 的
+清单本身来自 `git diff --cached`，于是每条变更的 `Staged` 都是 false，
+`summarizeChangeSet` 的 switch 全部落空。实测对比（同一仓库）：
+
+```
+修前:  Files changed: 3 (+2 −1)   staged 0 · unstaged 0 · untracked 0
+修后:  Files changed: 3 (+2 −1)   staged 3 · unstaged 0 · untracked 0
+git 真值: R100 src/deep/old.go→new.go / M src/main.go / A src/staged_new.go
+```
+
+**2. `-h` 的自定义说明整段丢失，且退出码为 2。** pflag 的
+`(*FlagSet).usage()` 在 `f == CommandLine` 时调的是**包级** `pflag.Usage`，
+而 v1.8 的重构只设了 `fs.Usage`——正好踩中这个分叉，`Convenience shortcuts:`
+`Combinations:` `Environment variables:` 三段全没了；又因为 pflag 把
+`ErrHelp` 交给 `ExitOnError` 处理，`gx -h` 还会打印 `pflag: help requested`
+并以 2 退出。现在两份 Usage 都挂，并自己接管 `-h`：输出到 stdout、退出 0、
+不再有 pflag 噪声（未知参数仍然是退出 2 并打印同一份说明）。
+
+### 其余健壮性修复（内部，不改变用户可见行为）
+
+| 位置 | 问题 |
+|---|---|
+| `runLimited` | 截断时吞掉 `waitErr`（`if waitErr != nil && !clipped`）——管道已排干，此时的失败一定是 git 真出错。用 `git diff --exit-code`（有差异时退出 1 且输出超限）可以稳定复现 |
+| `collectHistory` | 64MB 截断只设了 `PatchClipped`，没往 `Warnings` 里记（`collectWorkingTree` 有） |
+| `parseFlagsInto` | 丢掉 `fs.Parse` 的返回错误——生产路径靠 `ExitOnError` 无所谓，但它是为单测抽出来的，参数拼错会静默拿到零值 Config；现在记进 `Config.parseErr` 并由 `validateConfig` 抛出 |
+| `pushStatsToRemote` | 没走 `artifactBaseName`，git 模式的 stats 推送会覆盖快照模式的 stats |
+| 测试 `gitIn` | 只设了 `GIT_CONFIG_NOSYSTEM`，没隔离用户级 `~/.gitconfig`（`diff.external`/`core.autocrlf` 会污染断言），补 `GIT_CONFIG_GLOBAL=os.DevNull` |
+| `capDiffBytes` | 单行硬切时返回的 `omitted` 兼作"是否截断"的标记，看起来像行数；标注文案改成用真实行数，语义写进注释 |
+| `applyChunk` | `DiffFull` 在二进制检查之前就设了——正文都没输出，不该计入"总量过大"告警 |
+| `mdCode` | 含换行/控制字符的路径原样输出会截断 Markdown（git 允许路径含换行）；现在先转义为可见写法 |
+
+七处代码修复都做了反向验证（改回错误实现，对应用例确实失败），另有
+`TestHelpFlagAndUsageText`、`TestUsageWiredForCommandLine`、
+`TestGitStagedModeMarksEveryChangeStaged`、`TestRunLimitedSurfacesFailureEvenWhenClipped`、
+`TestParseFlagsIntoKeepsParseError`、`TestMdCodeEscapesControlChars`、
+`TestArtifactBaseName` 等新用例。
+
 ### 不可变性测试
 
 `TestChangeOutputIsValidUTF8AndNULFree` 直接对两种模式的产物断言
