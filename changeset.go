@@ -6,7 +6,7 @@ package main
 //
 // 设计原则：这里只负责"把 Git 的变更变成一份 changeset"，
 // 过滤（-i/-x/-m/-X/-I）、忽略、敏感文件 gate、体积上限、渲染、
-// 剪贴板/推送/-s 全部复用 godoc.go 里既有的 pipeline。
+// 剪贴板/推送/-s 全部复用 main.go 里既有的 pipeline。
 //
 // 之所以自己调 git 而不是引 go-git：
 //   - go-git 会给二进制增加数 MB，且不完整支持 filters / submodule /

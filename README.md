@@ -310,7 +310,7 @@ fixtures/
 
 **症状**：加 `-n` 后子目录文件仍被扫入。
 
-**根因**（`godoc.go`）：
+**根因**（`main.go`，当时叫 `godoc.go`）：
 
 ```go
 // 错误实现
@@ -383,7 +383,7 @@ changeset（git）─┤                              ├─→ 同一套过滤/
 `([]FileMetadata, Stats, []SkippedFile)`，所以 `-s / -c / -p / --icloud /
 --dry-run / -o` 一行都不用改就能用。
 
-实现落在新文件里，没往 43KB 的 `godoc.go` 里继续堆：
+实现落在新文件里，没往 43KB 的 `main.go` 里继续堆：
 
 | 文件 | 职责 |
 |---|---|
@@ -405,7 +405,7 @@ changeset（git）─┤                              ├─→ 同一套过滤/
 源文件从 1 个变成 3 个，所以所有构建入口都从"指定文件"改成"按包构建"：
 
 ```bash
-# 以前
+# 以前（源文件还叫 godoc.go，单文件时代）
 go build -o sourcepack godoc.go
 # 现在
 go build -o sourcepack .
@@ -458,7 +458,8 @@ gate 之后；`9b20203` 把它挪成独立循环（`changeoutput.go`）时只检
 旧 `isBinaryBuffer` 只在"非法 UTF-8"时才去找 NUL，于是 `abc\x00def`
 这类文件被当成文本，裸 NUL 直接写进产物（快照模式与变更模式都中招）。
 判定收紧为：**含 NUL（与 git 的 `buffer_is_binary` 同标准）或不是合法
-UTF-8 → 二进制**；探测窗口 1024 → 8000 字节（与 git 对齐）。
+UTF-8 → 二进制**，且判定范围是**整个文件**而不是前若干字节（按字节截断
+的窗口会把"切在多字节字符中间"的合法 UTF-8 误判成非法，见 v1.8.1）。
 
 ### 3 扩展名不是"内容是文本"的保证
 
@@ -541,3 +542,59 @@ git 真值: R100 src/deep/old.go→new.go / M src/main.go / A src/staged_new.go
 `TestGitDiffOnlyRespectsBinaryAndSizeGates`、`TestGitHistoryContentUsesNewestOccurrence`、
 `TestScanDirectorySkipsBinaryByContentNotExtension`。四处修复都做过反向验证
 （改回错误实现，对应用例确实失败）。
+
+---
+
+## 修复记录（2026-10-12 · v1.8.1）
+
+v1.8.1 是质量修复版，四件事都对应线上真实痛点。
+
+### 1. Windows 安装彻底修好（v1.8.0 上完全不工作）
+
+两个独立缺陷叠在一起，任何一个都会让 Windows 用户装完即挂：
+
+| 缺陷 | 症状 |
+|---|---|
+| 归档名用了 Node 的 `os.platform()`（`win32`），而 GoReleaser 用 GOOS（`windows`） | 请求 `sourcepack_<v>_win32_amd64.zip` → **404** |
+| `download-binary.js` 解压后存成 `sourcepack.exe`，`index.js` 却找 `sourcepack-win-amd64.exe` | 即使下载成功也 **Binary not found** |
+
+修法不是改字符串，而是**把命名规则收敛到一处**：`download-binary.js` 导出
+`resolveTarget()` / `binaryNameFor()`，`index.js` 也调用同一个函数取落地名，
+两侧不再各写一套模板。新增 `test/asset-names.test.js`（6 组平台×架构断言
+归档名与落地名，外加"index.js 不得再硬编码模板"的结构性断言），CI 增加
+`node --test test/`。
+
+### 2. >8KB 且含中文的文件被误判成二进制（fbd6401 引入，未发布）
+
+v1.8.1 开发期间实测发现：11KB 的 `.go` 文件（含中文注释）被静默跳过。
+根因是二进制探测对**按字节截断的 8000 字节窗口**做 UTF-8 校验，而窗口
+很可能正好切在一个汉字中间——多字节字符被腰斩，`utf8.Valid` 为假，
+于是判成二进制。**任何大于探测窗口且含中文/emoji 的文件都会中招。**
+
+修法：判定范围改为**整个文件**（含 NUL 或非法 UTF-8），流式读取时用
+`incompleteUTF8Tail()` 把末尾最多 3 字节的半截字符留到下一块，不参与校验。
+这比 git 的"前 8000 字节"窗口更严，也正好满足"正文必须能安全写进
+Markdown"这个真实目的。
+
+回归测试 `TestScanFileStatsLargeUTF8FileIsNotBinary` 的夹具特意让 8000 这个
+截断点**必定**落在汉字中间（`8000 % 3 == 2`）——第一版夹具用整行文本，
+截断点正好落在行首 ASCII 上，测不出这个 bug。
+
+### 3. 中文 Token 估算不再偏低
+
+旧实现一律 `size / 4`：UTF-8 汉字 3 字节只算 0.75 token，中文项目明显偏低。
+现在按内容估算：
+
+- CJK 汉字/全角标点约 **1 token/字**（UTF-8 三字节序列首字节 0xE3–0xE9）；
+- 其余（英文、代码、空白）约 **4 字节/token**。
+
+实测同一份 13.6KB 中文文档：旧值 3400 → 新值 4350；纯英文文件数值不变
+（不回归）。估算在统计行数的同一次流式读取里完成，零额外 I/O、零依赖。
+
+> 这是跨模型都偏保守的粗估：DeepSeek/Qwen 这类中文优化过的分词器实际更省，
+> gpt 系列更费。`-s` 里的数字当量级看即可。
+
+### 4. `godoc.go` → `main.go`
+
+单文件时代的历史包袱。构建入口早已是 `go build .`，所以这次只是
+`git mv`，同步更新了 `install.sh`、代码注释与 README 里的引用。

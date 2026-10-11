@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -12,10 +13,10 @@ func TestMatchPattern(t *testing.T) {
 		want    bool
 	}{
 		// Basename matching (no path separator in pattern)
-		{"godoc.go", "godoc.go", true},
-		{"godoc.go", "godoc", false}, // exact basename match only, no prefix
-		{"src/godoc.go", "godoc.go", true},
-		{"src/godoc.go", "godoc", false},
+		{"snapshot.go", "snapshot.go", true},
+		{"snapshot.go", "snapshot", false}, // exact basename match only, no prefix
+		{"src/snapshot.go", "snapshot.go", true},
+		{"src/snapshot.go", "snapshot", false},
 		{"foo.go", "*.go", true},
 		{"foo.txt", "*.go", false},
 		{"README.md", "*.md", true},
@@ -155,12 +156,102 @@ func TestScanDirectorySkipsBinaryByContentNotExtension(t *testing.T) {
 	}
 }
 
-func TestTokensApproximation(t *testing.T) {
-	content := "hello world"
-	tokens := len(content) / 4
-	expected := 2 // 11 / 4 = 2
-	if tokens != expected {
-		t.Errorf("token approximation = %d, want %d", tokens, expected)
+// 英文/代码按 4 字节 1 token；CJK 按 1 字 1 token（旧实现一律 size/4，
+// 对纯中文只有 0.75 token/字，明显偏低）。
+func TestCountTokensBuffer(t *testing.T) {
+	if got := countTokensBuffer([]byte(strings.Repeat("a", 400))); got != 100 {
+		t.Errorf("400 字节英文应约 100 token，实际 %d", got)
+	}
+	cn := strings.Repeat("中", 100) // 300 字节 = 100 个汉字
+	if got := countTokensBuffer([]byte(cn)); got != 100 {
+		t.Errorf("100 个汉字应约 100 token，实际 %d", got)
+	}
+	mixed := strings.Repeat("中", 50) + strings.Repeat("a", 100)
+	if got := countTokensBuffer([]byte(mixed)); got != 75 {
+		t.Errorf("50 汉字 + 100 字节英文 = 75 token，实际 %d", got)
+	}
+	if countTokensBuffer([]byte(cn)) <= len(cn)/4 {
+		t.Error("中文估算必须明显高于旧的 size/4")
+	}
+	if got := countTokensBuffer(nil); got != 0 {
+		t.Errorf("空内容应为 0，实际 %d", got)
+	}
+}
+
+// 分块读取时末尾可能截在多字节字符中间，那不是"内容非法"。
+func TestIncompleteUTF8Tail(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []byte
+		want int
+	}{
+		{"纯 ASCII", []byte("abc"), 0},
+		{"完整汉字", []byte("中文"), 0},
+		{"汉字被截断 2 字节", []byte{0xE4, 0xB8}, 2},
+		{"汉字被截断 1 字节", []byte{0xE4}, 1},
+		{"emoji 被截断 3 字节", []byte{0xF0, 0x9F, 0x98}, 3},
+		{"真非法字节（不是截断）", []byte("a\xff"), 0},
+		{"结尾是续字节但前面没有起始字节", []byte("a\x80\x80\x80\x80"), 0},
+	}
+	for _, c := range cases {
+		if got := incompleteUTF8Tail(c.in); got != c.want {
+			t.Errorf("%s: incompleteUTF8Tail = %d，期望 %d", c.name, got, c.want)
+		}
+	}
+}
+
+// 回归：按字节截断的窗口会把"切在多字节字符中间"的合法 UTF-8 判成非法，
+// 于是任何 >8KB 且含中文的文件都会被误杀成二进制（实测 11KB 的 .go 中招）。
+func TestScanFileStatsLargeUTF8FileIsNotBinary(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "big_cn.go")
+	// 开头放一长串连续汉字：8000 % 3 == 2，保证"前 8000 字节"这个旧窗口
+	// 必定切在一个汉字的中间（如果只用整行文本，8000 有可能正好落在行首/ASCII 边界，
+	// 那样测不出这个 bug——第一版夹具就踩了这个坑）
+	content := strings.Repeat("中", 3000) + "\n" + strings.Repeat("// 中文注释说明这个函数做什么\n", 200)
+	mustWrite(t, p, content)
+	if len(content) <= 8000 {
+		t.Fatalf("夹具需超过 8000 字节才有意义，实际 %d", len(content))
+	}
+	if len(content[:8000])%3 == 0 {
+		t.Log("提示：截断点恰好落在字符边界，本用例对该路径不敏感")
+	}
+
+	lineCount, isBinary, tokens, err := scanFileStats(p, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if isBinary {
+		t.Error("含中文的大文件不该被判成二进制（这是窗口截断误判）")
+	}
+	if lineCount != 201 {
+		t.Errorf("行数 = %d，期望 201", lineCount)
+	}
+	if tokens <= len(content)/4 {
+		t.Errorf("中文 token 估算应高于 size/4：tokens=%d size/4=%d", tokens, len(content)/4)
+	}
+}
+
+// 判定范围是整个文件：第 8000 字节之后的 NUL / 非法 UTF-8 同样要拦住
+// （否则裸字节会随正文写进 Markdown）。
+func TestScanFileStatsDetectsBinaryBeyondProbeWindow(t *testing.T) {
+	dir := t.TempDir()
+	late := filepath.Join(dir, "late_bad.bin")
+	mustWrite(t, late, strings.Repeat("a", 9000)+"\xff\xfe")
+	if _, isBinary, _, err := scanFileStats(late, true); err != nil || !isBinary {
+		t.Errorf("第 9000 字节后的非法 UTF-8 应判为二进制（err=%v binary=%v）", err, isBinary)
+	}
+
+	lateNul := filepath.Join(dir, "late_nul.bin")
+	mustWrite(t, lateNul, strings.Repeat("a", 9000)+"\x00")
+	if _, isBinary, _, err := scanFileStats(lateNul, true); err != nil || !isBinary {
+		t.Errorf("第 9000 字节后的 NUL 应判为二进制（err=%v binary=%v）", err, isBinary)
+	}
+
+	// 整文件合法则不能误杀（跨块边界的中文最容易出问题）
+	big := filepath.Join(dir, "big_ok.txt")
+	mustWrite(t, big, strings.Repeat("中", 5000)) // 15000 字节，跨多个块边界
+	if _, isBinary, _, err := scanFileStats(big, true); err != nil || isBinary {
+		t.Errorf("整文件合法 UTF-8 不该判为二进制（err=%v binary=%v）", err, isBinary)
 	}
 }
 

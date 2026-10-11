@@ -5,7 +5,7 @@
 INSTALL_DIR="/usr/local/bin"
 BINARY_NAME="sourcepack"
 SHORTCUT_NAMES=("gdoc" "gdx" "gx" "doc")
-SOURCE_FILE="go.mod"   # 入口是包（godoc.go + changeset.go + changeoutput.go）
+SOURCE_FILE="go.mod"   # 入口是包（main.go + changeset.go + changeoutput.go）
 
 # 检查权限
 USE_SUDO=""

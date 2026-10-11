@@ -101,7 +101,7 @@ func buildChangeFiles(config *Config, cs *ChangeSet) ([]FileMetadata, Stats, []S
 			// git 的标记是"base 与 target 任一侧为二进制"，所以"旧二进制 → 新文本"
 			// 的文件会被误判成二进制而丢掉正文。探测标准已收紧到与 git 等价
 			// （前 8000 字节含 NUL，或非法 UTF-8），不会漏。
-			lineCount, isBinary, serr := scanFileStats(full, true)
+			lineCount, isBinary, tokens, serr := scanFileStats(full, true)
 			switch {
 			case serr != nil:
 				noContent[p] = "Read error"
@@ -110,7 +110,7 @@ func buildChangeFiles(config *Config, cs *ChangeSet) ([]FileMetadata, Stats, []S
 			default:
 				fm := FileMetadata{RelPath: p, FullPath: full, Size: info.Size(), LineCount: lineCount}
 				files = append(files, fm)
-				accumulateStats(&stats, fm, int(info.Size()/4))
+				accumulateStats(&stats, fm, tokens)
 
 				if ch != nil && ch.Untracked && ch.Diff == "" {
 					// 未跟踪文件在 git diff 里一行都没有：摘要里的 +N 与总量

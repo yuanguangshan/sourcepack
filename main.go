@@ -822,7 +822,7 @@ func scanDirectory(config Config) ([]FileMetadata, Stats, []SkippedFile) {
 		// 一律探测二进制：扩展名不能作为"内容是文本"的保证——实测一个
 		// 含 NUL 字节的 .md 会被当文本写出，整个产物变成非法 UTF-8。
 		// 探测复用同一个 bufio 缓冲，成本约等于 0。
-		lineCount, isBinary, err := scanFileStats(path, true)
+		lineCount, isBinary, tokens, err := scanFileStats(path, true)
 		if err != nil {
 			skipped = append(skipped, SkippedFile{relPath, "Read error"})
 			stats.Skipped++
@@ -834,7 +834,6 @@ func scanDirectory(config Config) ([]FileMetadata, Stats, []SkippedFile) {
 			return nil
 		}
 
-		tokens := int(info.Size() / 4)
 		fMeta := FileMetadata{RelPath: relPath, FullPath: path, Size: info.Size(), LineCount: lineCount}
 		files = append(files, fMeta)
 
@@ -976,6 +975,10 @@ func shouldIgnoreFileReason(relPath string, config Config, matcher *gitignoreMat
 // 直接写进了 Markdown，整个产物变成非法 UTF-8）：
 //   - 含 NUL 字节 → 二进制（与 git 的 buffer_is_binary 同标准）；
 //   - 不是合法 UTF-8 → 也按二进制处理，否则产物里会混入裸字节。
+//
+// 注意：这个函数要求 buf 是**完整内容**。窗口/分块场景请用
+// incompleteUTF8Tail() 把末端的半截字符排除后再判断——直接把
+// 按字节截断的缓冲区丢进来，会把"窗口切在多字节字符中间"误判成非法。
 func isBinaryBuffer(buf []byte) bool {
 	if len(buf) == 0 {
 		return false
@@ -986,19 +989,51 @@ func isBinaryBuffer(buf []byte) bool {
 	return !utf8.Valid(buf)
 }
 
-// binaryProbeSize 判断二进制时探测的头部字节数。
-// 取 8000 与 git 的 buffer_is_binary 一致（git 只看前 8000 字节里有没有 NUL），
-// 避免"git 说 binary、我们说是文本"或反过来的错位。
-const binaryProbeSize = 8000
+// incompleteUTF8Tail 返回末尾那段"不完整的多字节序列"的长度（0–3 字节）。
+//
+// 用于流式校验：分块读取时末尾可能正好截在一个字符中间，那不是内容非法，
+// 只是这一块不完整。返回值是应该留到下一块、不参与本次校验的字节数。
+func incompleteUTF8Tail(b []byte) int {
+	for back := 1; back <= 3 && back <= len(b); back++ {
+		start := len(b) - back
+		c := b[start]
+		if c < 0x80 {
+			return 0 // ASCII 收尾，末尾完整
+		}
+		if c >= 0xC0 && c <= 0xF4 {
+			need := 1
+			switch {
+			case c >= 0xF0:
+				need = 3
+			case c >= 0xE0:
+				need = 2
+			}
+			if back-1 >= need {
+				return 0 // 续字节齐了
+			}
+			for _, cc := range b[start+1:] {
+				if cc < 0x80 || cc > 0xBF {
+					return 0 // 后面不是续字节：不是"被截断"，是真的非法
+				}
+			}
+			return back
+		}
+	}
+	return 0
+}
 
-// scanFileStats 流式获取文件的行数，并探测头部判断是否二进制。
-// 只顺序读一遍文件即可完成两项工作，避免将整个文件读入内存。
-// probeBinary 目前调用方一律传 true（见上面的注释），保留参数是为了
-// 明确"这一步是可以被显式关掉的"。
-func scanFileStats(path string, probeBinary bool) (lineCount int, isBinary bool, err error) {
+// scanFileStats 流式获取文件的行数与 token 估算值，并判断内容能否安全
+// 写进 Markdown（含 NUL 或整文件不是合法 UTF-8 → 二进制）。
+//
+// 只顺序读一遍文件即可完成三件事，不把文件读进内存。
+// probeBinary 目前调用方一律传 true，保留参数是为了明确"这一步可被显式关掉"。
+//
+// 判定范围是**整个文件**，不是前 N 字节：窗口截断会把切在多字节字符
+// 中间的合法 UTF-8 误判成非法（实测任何 >8KB 且含中文的文件都会被误杀）。
+func scanFileStats(path string, probeBinary bool) (lineCount int, isBinary bool, tokens int, err error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return 0, false, err
+		return 0, false, 0, err
 	}
 	defer f.Close()
 
@@ -1006,29 +1041,71 @@ func scanFileStats(path string, probeBinary bool) (lineCount int, isBinary bool,
 	// 直接返回 ErrBufferFull（与文件实际大小无关），8000 字节的探测窗口
 	// 配上默认 4096 的缓冲会让所有非白名单文本文件变成"Read error"。
 	reader := bufio.NewReaderSize(f, 32*1024)
-	if probeBinary {
-		head, perr := reader.Peek(binaryProbeSize)
-		if perr != nil && perr != io.EOF && perr != bufio.ErrBufferFull {
-			return 0, false, perr
-		}
-		if isBinaryBuffer(head) {
-			return 0, true, nil
-		}
-	}
 
+	// 数行 / 估算 token / 校验文本三件事共用这一遍读取（不额外读盘）
+	var carry [4]byte
+	carryLen := 0
+	scan := make([]byte, 0, 32*1024+4) // 复用底层数组，避免每块分配
 	buf := make([]byte, 32*1024)
 	for {
 		n, rerr := reader.Read(buf)
 		if n > 0 {
-			lineCount += countLinesBuffer(buf[:n])
+			chunk := buf[:n]
+			lineCount += countLinesBuffer(chunk)
+			tokens += countTokensBuffer(chunk)
+
+			if probeBinary && !isBinary {
+				scan = append(scan[:carryLen], chunk...)
+				if bytes.IndexByte(scan, 0) >= 0 {
+					isBinary = true
+				} else {
+					tail := incompleteUTF8Tail(scan)
+					if !utf8.Valid(scan[:len(scan)-tail]) {
+						isBinary = true
+					} else {
+						carryLen = copy(carry[:], scan[len(scan)-tail:])
+					}
+				}
+			}
 		}
 		if rerr == io.EOF {
-			return lineCount, false, nil
+			break
 		}
 		if rerr != nil {
-			return 0, false, rerr
+			return 0, false, 0, rerr
 		}
 	}
+	if probeBinary && !isBinary && carryLen > 0 {
+		// 文件以不完整的多字节序列收尾 → 不是合法 UTF-8
+		isBinary = true
+	}
+	return lineCount, isBinary, tokens, nil
+}
+
+// countTokensBuffer 估算一段 UTF-8 字节对应的 LLM token 数。
+//
+// 经验法则：
+//   - CJK 汉字/全角标点约 1 token/字（UTF-8 每字 3 字节）；
+//   - 其余（英文、代码、空白）约 4 字节/token。
+//
+// 旧实现一律 size/4，对中文项目明显偏低（3 字节的汉字只算 0.75）。
+// 这里只做字节级判断、不解码整个文件：UTF-8 里 U+3000–U+9FFF
+// （CJK 标点/假名/汉字）是 3 字节序列，首字节落在 0xE3–0xE9，
+// 命中即按一个字计 token 并跳过两个续字节。
+//
+// 注意这是跨模型都会"偏保守"的粗估：DeepSeek/Qwen 这类中文优化过的
+// 分词器实际会更省，gpt 系会更费；-s 里的数字当量级看即可。
+func countTokensBuffer(data []byte) int {
+	cjkChars, otherBytes := 0, 0
+	for i := 0; i < len(data); i++ {
+		if b := data[i]; b >= 0xE3 && b <= 0xE9 && i+2 < len(data) {
+			cjkChars++
+			i += 2
+			continue
+		}
+		otherBytes++
+	}
+	return cjkChars + otherBytes/4
 }
 
 func countLinesBuffer(data []byte) int {

@@ -24,3 +24,9 @@ jobs:
         with:
           go-version: ${{ matrix.go-version }}
       - run: go test ./...
+      # npm 侧：归档名 / 落地名一致性（Windows 曾因 win32 vs windows 404）
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: asset name tests
+        run: node --test test/
