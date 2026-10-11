@@ -682,6 +682,40 @@ func TestGitDiffOnlyRespectsBinaryAndSizeGates(t *testing.T) {
 	}
 }
 
+// 同一件事只说一遍：二进制文件的"无正文"说明曾经被渲染两次
+// （switch 一次 + !ok 兜底一次，且两句话互相矛盾）。
+func TestChangeRenderExplainsContentOmissionOnce(t *testing.T) {
+	dir := newGitFixture(t)
+	writeFile(t, dir, "seed.txt", "package a\n")
+	gitIn(t, dir, "add", "-A")
+	gitIn(t, dir, "commit", "-q", "-m", "init")
+	writeFile(t, dir, "new.bin", "PNG\x00\x00\x01\x02")
+	writeFile(t, dir, "stray.md", "text\n\x00nul\n")
+	writeFile(t, dir, "huge.txt", strings.Repeat("line\n", 200)) // 1KB > 512B 上限
+
+	cfg := gitConfig(Config{GitDiff: true, MaxDiffLines: 2000, MaxFileSize: 512}, dir)
+	cs, files, stats, _ := collectForTest(t, cfg)
+	var buf bytes.Buffer
+	if err := writeChangeContent(cfg, files, stats, cs, &buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+
+	// 两个二进制文件各一次；超限文件一次；都不该再出现第二句"全文已省略"
+	if n := strings.Count(out, "_Binary file — content not emitted._"); n != 2 {
+		t.Errorf("二进制说明应为每文件一次（共 2 次），实际 %d 次", n)
+	}
+	if n := strings.Count(out, "_Content omitted: Size limit._"); n != 1 {
+		t.Errorf("超限说明应为 1 次，实际 %d 次", n)
+	}
+	if strings.Contains(out, "Full content omitted") {
+		t.Error("正文省略说明与上面的说明重复了")
+	}
+	if strings.ContainsRune(out, 0) || !utf8.ValidString(out) {
+		t.Error("产物含裸字节或不是合法 UTF-8")
+	}
+}
+
 // -G 下同一路径可能出现在多个提交里：正文读的是"当前工作区"，
 // 判定就必须用最新一次出现的元数据（旧实现取最旧那次）。
 func TestGitHistoryContentUsesNewestOccurrence(t *testing.T) {

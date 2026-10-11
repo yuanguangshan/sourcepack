@@ -99,12 +99,12 @@ func TestIsBinaryBuffer(t *testing.T) {
 		t.Error("empty buffer should not be detected as binary")
 	}
 
-	// v1.8.1 收紧：非法 UTF-8（无 NUL）也算二进制，否则裸字节会写进 Markdown
+	// 本版收紧：非法 UTF-8（无 NUL）也算二进制，否则裸字节会写进 Markdown
 	if !isBinaryBuffer([]byte("\x80\x81\x82\xff")) {
 		t.Error("invalid UTF-8 without NUL should be detected as binary")
 	}
 
-	// v1.8.1 收紧：合法 UTF-8 + NUL。旧实现只在"非法 UTF-8"时才去找 NUL，
+	// 本版收紧：合法 UTF-8 + NUL。旧实现只在"非法 UTF-8"时才去找 NUL，
 	// 于是 "abc\x00def" 被当成文本，裸 NUL 直接进了产物。
 	if !isBinaryBuffer([]byte("abc\x00def\n")) {
 		t.Error("valid UTF-8 containing a NUL should be detected as binary")

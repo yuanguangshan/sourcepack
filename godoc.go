@@ -921,7 +921,7 @@ func shouldIgnoreFileReason(relPath string, config Config, matcher *gitignoreMat
 
 // isBinaryBuffer 判断一段字节是否应按二进制处理。
 //
-// 判定标准（v1.8.1 起收紧，旧实现只在"非法 UTF-8"时才去找 NUL，
+// 判定标准（本版起收紧；旧实现只在"非法 UTF-8"时才去找 NUL，
 // 于是 "abc\x00def" 这种合法 UTF-8 + NUL 的文件被当成文本，裸字节
 // 直接写进了 Markdown，整个产物变成非法 UTF-8）：
 //   - 含 NUL 字节 → 二进制（与 git 的 buffer_is_binary 同标准）；

@@ -403,22 +403,25 @@ func writeChangeContent(config Config, files []FileMetadata, stats Stats, cs *Ch
 				fmt.Fprintf(bw, "\n_%s_\n", strings.Join(fl, ", "))
 			}
 
-			switch {
-			case ch.Diff != "":
+			// diff 块（可能没有）与"正文状况"分成两段，后者每次出现只说一遍：
+			// 之前二进制文件会被 switch 和 !ok 兜底各说一次（自相矛盾的重复文案）。
+			if ch.Diff != "" {
 				fmt.Fprintln(bw)
 				writeFenced(bw, "diff", strings.TrimRight(ch.Diff, "\n"))
+			}
+			switch {
 			case ch.Binary || ch.NoContent == "Binary file":
-				fmt.Fprintln(bw, "\n_Binary file — no content or textual diff emitted._")
+				fmt.Fprintln(bw, "\n_Binary file — content not emitted._")
 			case ch.NoContent != "":
 				// 超限 / 不在工作区 / 子模块 / 读失败：如实说明，别假装"没有变更"
 				fmt.Fprintf(bw, "\n_Content omitted: %s._\n", ch.NoContent)
-			case ch.Untracked && config.DiffOnly:
+			case ch.Diff == "" && ch.Untracked && config.DiffOnly:
 				fmt.Fprintln(bw, "\n_New untracked file — no diff available in --diff-only mode._")
-			case ch.Untracked:
+			case ch.Diff == "" && ch.Untracked:
 				fmt.Fprintln(bw, "\n_New untracked file — full content included below._")
-			case ch.Status != "" && ch.Status[0] == 'D':
+			case ch.Diff == "" && ch.Status != "" && ch.Status[0] == 'D':
 				fmt.Fprintln(bw, "\n_File deleted._")
-			default:
+			case ch.Diff == "":
 				fmt.Fprintln(bw, "\n_No textual diff (mode- or rename-only change)._")
 			}
 
@@ -426,15 +429,12 @@ func writeChangeContent(config Config, files []FileMetadata, stats Stats, cs *Ch
 				continue
 			}
 			contentWritten[ch.Path] = true
-			fm, ok := byPath[ch.Path]
-			if !ok {
-				// --diff-only 下正文本来就不输出，无正文原因已在上面的 switch 里说明
-				if ch.NoContent != "" && !config.DiffOnly {
-					fmt.Fprintf(bw, "\n_Full content omitted: %s._\n", ch.NoContent)
-				}
+			if config.DiffOnly {
 				continue
 			}
-			if config.DiffOnly {
+			fm, ok := byPath[ch.Path]
+			if !ok {
+				// 没有正文的原因上面已经说过一次，这里不再重复
 				continue
 			}
 			label := "Full content"
