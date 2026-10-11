@@ -48,9 +48,12 @@ func buildChangeFiles(config *Config, cs *ChangeSet) ([]FileMetadata, Stats, []S
 		}
 	}
 
-	// 一次遍历建立 path → 该路径最后一次出现的 Change 的索引：
-	// -G 下同一文件可能出现在多个提交里，正文只读一次（取最新那次），
-	// 但过滤/无正文的标记要打到该路径的每一处出现上。
+	// 一次遍历建立 path → 该路径**最新一次出现**的 Change 索引。
+	//
+	// -G 下同一文件可能出现在多个提交里：正文只读一次，取最新那次，
+	// 因为 readContent 读的是"当前工作区"，二进制/未跟踪这些判定也就
+	// 必须用最新一次的元数据（cs.Commits 是 git log 顺序：新 → 旧，
+	// 所以"第一次遇到"即最新）。渲染层同样按这个顺序写正文，两边一致。
 	// （原来是每处理一个路径就把整个 changeset 线性扫一遍，O(路径 × 变更)。）
 	lastByPath := make(map[string]*Change, 32)
 	var order []string
@@ -58,8 +61,8 @@ func buildChangeFiles(config *Config, cs *ChangeSet) ([]FileMetadata, Stats, []S
 		for _, ch := range grp.Changes {
 			if _, ok := lastByPath[ch.Path]; !ok {
 				order = append(order, ch.Path)
+				lastByPath[ch.Path] = ch
 			}
-			lastByPath[ch.Path] = ch
 		}
 	}
 
@@ -93,12 +96,12 @@ func buildChangeFiles(config *Config, cs *ChangeSet) ([]FileMetadata, Stats, []S
 			noContent[p] = "Submodule or directory"
 		} else if info.Size() > config.MaxFileSize {
 			noContent[p] = "Size limit"
-		} else if ch != nil && ch.Binary {
-			// git 自己已经判定过二进制（看文件头 8000 字节里有没有 NUL），
-			// 它的判断比我们"UTF-8 合法性"那套更准，优先采信。
-			noContent[p] = "Binary file"
 		} else {
-			lineCount, isBinary, serr := scanFileStats(full, !isKnownTextFile(p))
+			// 正文是否输出**以对当前文件的探测为准**，不用 diff 里的二进制标记：
+			// git 的标记是"base 与 target 任一侧为二进制"，所以"旧二进制 → 新文本"
+			// 的文件会被误判成二进制而丢掉正文。探测标准已收紧到与 git 等价
+			// （前 8000 字节含 NUL，或非法 UTF-8），不会漏。
+			lineCount, isBinary, serr := scanFileStats(full, true)
 			switch {
 			case serr != nil:
 				noContent[p] = "Read error"
@@ -127,7 +130,10 @@ func buildChangeFiles(config *Config, cs *ChangeSet) ([]FileMetadata, Stats, []S
 	// 这里补一个 git 风格的"新增文件"补丁，否则新文件会凭空消失。
 	if config.DiffOnly {
 		for _, p := range order {
-			if filteredReason[p] != "" {
+			// noContent 非空 = 二进制 / 超限 / 不在工作区 / 子模块：
+			// 与默认模式保持同一道 gate，否则 --diff-only 会把二进制裸字节
+			// 和超限文件的全文（os.ReadFile 无上限）合成进 diff 输出。
+			if filteredReason[p] != "" || noContent[p] != "" {
 				continue
 			}
 			ch := lastByPath[p]
@@ -135,10 +141,10 @@ func buildChangeFiles(config *Config, cs *ChangeSet) ([]FileMetadata, Stats, []S
 				continue
 			}
 			content, rerr := os.ReadFile(filepath.Join(cs.RepoRoot, filepath.FromSlash(p)))
-			if rerr != nil {
+			if rerr != nil || diffBodyLooksBinary(string(content)) {
 				continue
 			}
-			diff, total, omitted := syntheticNewFileDiff(p, content, config.MaxDiffLines)
+			diff, total, omitted := syntheticNewFileDiff(p, content, config.MaxDiffLines, config.MaxFileSize)
 			ch.Diff = diff
 			ch.DiffFull = total
 			ch.DiffOmitted = omitted
@@ -156,6 +162,11 @@ func buildChangeFiles(config *Config, cs *ChangeSet) ([]FileMetadata, Stats, []S
 			}
 			if nc := noContent[ch.Path]; nc != "" {
 				ch.NoContent = nc
+				if nc == "Binary file" {
+					// 未跟踪文件没有 git diff 可判断，Binary 要靠我们的探测补上，
+					// 否则标记与渲染文案都会说成"文本"
+					ch.Binary = true
+				}
 			}
 		}
 	}
@@ -396,8 +407,13 @@ func writeChangeContent(config Config, files []FileMetadata, stats Stats, cs *Ch
 			case ch.Diff != "":
 				fmt.Fprintln(bw)
 				writeFenced(bw, "diff", strings.TrimRight(ch.Diff, "\n"))
-			case ch.Binary:
-				fmt.Fprintln(bw, "\n_Binary file — no textual diff._")
+			case ch.Binary || ch.NoContent == "Binary file":
+				fmt.Fprintln(bw, "\n_Binary file — no content or textual diff emitted._")
+			case ch.NoContent != "":
+				// 超限 / 不在工作区 / 子模块 / 读失败：如实说明，别假装"没有变更"
+				fmt.Fprintf(bw, "\n_Content omitted: %s._\n", ch.NoContent)
+			case ch.Untracked && config.DiffOnly:
+				fmt.Fprintln(bw, "\n_New untracked file — no diff available in --diff-only mode._")
 			case ch.Untracked:
 				fmt.Fprintln(bw, "\n_New untracked file — full content included below._")
 			case ch.Status != "" && ch.Status[0] == 'D':
@@ -406,18 +422,19 @@ func writeChangeContent(config Config, files []FileMetadata, stats Stats, cs *Ch
 				fmt.Fprintln(bw, "\n_No textual diff (mode- or rename-only change)._")
 			}
 
-			if config.DiffOnly {
-				continue
-			}
 			if contentWritten[ch.Path] {
 				continue
 			}
 			contentWritten[ch.Path] = true
 			fm, ok := byPath[ch.Path]
 			if !ok {
-				if ch.NoContent != "" {
+				// --diff-only 下正文本来就不输出，无正文原因已在上面的 switch 里说明
+				if ch.NoContent != "" && !config.DiffOnly {
 					fmt.Fprintf(bw, "\n_Full content omitted: %s._\n", ch.NoContent)
 				}
+				continue
+			}
+			if config.DiffOnly {
 				continue
 			}
 			label := "Full content"
@@ -497,6 +514,9 @@ func summarizeRows(cs *ChangeSet) []summaryRow {
 			}
 			if ch.DiffOmitted > 0 {
 				addFlag("diff truncated")
+			}
+			if ch.NoContent == "Size limit" {
+				addFlag("content skipped (size)")
 			}
 		}
 	}

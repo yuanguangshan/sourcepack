@@ -222,12 +222,21 @@ gx -G 1 --diff-only -c    # 只把最后一个提交的 diff 复制到剪贴板
 | 重命名 | `-M` 检测，显示 `old → new`；`--name-status -z` 解析，不怕空格/换行路径 |
 | 合并提交（`-G` 默认包含） | 相对**第一父**求 diff，并标注 merge |
 | `-G 5 --no-merges` | 取 5 个非合并提交 |
-| 二进制文件 | git 的判定优先；只列清单，不出正文，diff 仍是 git 原样的 `Binary files ... differ` |
+| 二进制文件 | **一律按内容判定**（不看扩展名）：含 NUL 或不是合法 UTF-8 → 只列清单，不出正文；git 原样的 `Binary files ... differ` 保留 |
 | 删除的文件 | 保留 diff；正文标注 `Full content omitted: Not in working tree` |
 | 中文 / 空格文件名 | `-c core.quotepath=false`，原样 UTF-8；diff 头里的尾 TAB 会被正确剥离 |
-| 大 diff | 单文件默认截断到 `--max-diff-lines 2000` 行并标注；变更总行数（diff + 新文件正文）超 2 万行时终端与文档都会警告 |
+| 大 diff（行多） | 单文件默认截断到 `--max-diff-lines 2000` 行并标注 |
+| 大 diff（单行超长） | 再套一层**字节上限**（复用 `--max-size`，默认 500KB）——按行截断对"一行 20MB"完全无效 |
+| 变更总行数 | 变更总行数（diff + 新文件正文）超 2 万行时终端与文档都会警告 |
 | 未跟踪文件的行数 | git diff 里没有它，所以 `+N` 与总量告警按文件正文行数计入 |
 | 超过 64 MB 的 diff | 在最后一个完整文件边界处截断并标注 |
+| `--diff-only` | 与默认模式走**同一道**二进制/体积 gate：二进制与超 `--max-size` 的文件不会出现在合成 diff 里 |
+
+> **产物永远是合法 UTF-8**：这是硬约束。除了上面两道 gate，git 给出的
+> diff 正文还会再过一次内容检查——"前 8000 字节干净、后面才有 NUL"、
+> 或"无 NUL 但非法 UTF-8"的文件，git 会当文本输出逐行 diff，正文里就是
+> 裸字节，这种情况会只保留状态与行数、丢弃正文并标记为 binary。
+> 扩展名不作为"内容是文本"的依据：含 NUL 的 `.md` 同样会被判为二进制。
 
 > **安全**：`.env`、`id_rsa`、`.npmrc`、`.git-credentials` 等敏感文件沿用全量
 > 快照的 gate，**默认排除**并列入"被规则排除的清单"。注意 `git add -f` 过的
@@ -240,7 +249,7 @@ gx -G 1 --diff-only -c    # 只把最后一个提交的 diff 复制到剪贴板
 ## 特性
 
 - **极速**: Go 编写，秒级处理万行代码。
-- **智能**: 自动处理 `.gitignore` 和 `.gdignore`，支持 `!` 否定、`**` 通配等完整 gitignore 语法；自动跳过二进制文件。
+- **智能**: 自动处理 `.gitignore` 和 `.gdignore`，支持 `!` 否定、`**` 通配等完整 gitignore 语法；按**内容**自动跳过二进制/非 UTF-8 文件，保证产物永远是合法 UTF-8。
 - **变更模式**: `-g` 打包未提交改动、`-G N` 打包最近 N 个提交，直接产出一份适合 AI 审查的变更快照（diff + 变更文件全文）。
 - **统计**: `-s` 多维度代码统计（Token 预估、目录占比、语言分布）。
 - **便捷**: `-c` 一键复制到剪贴板，`-p` 一键推送到远端。
@@ -421,3 +430,58 @@ go build -o sourcepack .
 | `--show-prefix` 改回 `filepath.Rel` | `TestGitSubdirScope`（Pathspec 变成 `""`） |
 | hunk 计数改回"只看 `+`/`-` 前缀" | `TestSplitPatchCountsAndPaths`（+1 −1 ≠ +2 −2） |
 
+---
+
+## 新增记录（2026-10-12 · v1.8.1）：产物纯净性 —— 二进制不再渗进快照
+
+起因是一轮外部评审：`--diff-only` 下未跟踪的二进制/超限文件拿到了合成 diff。
+顺着查下去发现是**三类同源问题**，共同后果都是"裸字节进 Markdown、
+产物不再是合法 UTF-8"。三个都不影响文本仓库的常规使用，但都是真的。
+
+### 1（重构回归）`--diff-only` 的合成补丁绕过了二进制/体积 gate
+
+`24f54cb` 里合成补丁生成在主循环的成功路径内，天然位于所有 `noContent`
+gate 之后；`9b20203` 把它挪成独立循环（`changeoutput.go`）时只检查了
+`filteredReason`，漏了 `noContent`。后果实测：
+
+| 场景 | 修复前 | 修复后 |
+|---|---|---|
+| 未跟踪的小二进制（含 NUL） | 合成 diff 里塞裸字节、`+1 −0` | `+0 −0`、标记 binary、无 diff |
+| 未跟踪的 60MB blob（超 `--max-size`） | **产物 62,952,472 字节**，RSS 148MB | 3,112 字节（`--max-size 1`），RSS 有界 |
+| 已跟踪的单行 20MB 文本 | **产物 40MB**（按行截断对单行无效） | 514KB（字节上限生效） |
+
+修法：合成补丁前补上 `noContent[p] != ""` 检查；给 diff 正文加字节上限
+（复用 `--max-size`）；单行超限时在 UTF-8 字符边界内硬切。
+
+### 2 二进制判定太弱：合法 UTF-8 + NUL 的文件被当文本
+
+旧 `isBinaryBuffer` 只在"非法 UTF-8"时才去找 NUL，于是 `abc\x00def`
+这类文件被当成文本，裸 NUL 直接写进产物（快照模式与变更模式都中招）。
+判定收紧为：**含 NUL（与 git 的 `buffer_is_binary` 同标准）或不是合法
+UTF-8 → 二进制**；探测窗口 1024 → 8000 字节（与 git 对齐）。
+
+### 3 扩展名不是"内容是文本"的保证
+
+旧实现里已知文本扩展名（`.md`/`.go`/`.json`…）**完全跳过探测**。实测一个
+含 NUL 的 `.md` 会让整个产物变成非法 UTF-8。现在一律按内容探测——探测
+复用同一个 `bufio` 缓冲，成本约等于 0。
+
+> 顺带修掉一个自己引出的坑：探测窗口从 1024 改到 8000 后，`bufio.Peek`
+> 因内部缓冲只有 4096 而返回 `ErrBufferFull`，所有非白名单文本文件都变成
+> "Read error"（快照直接空掉）。缓冲区改为 32KB 并容忍 `ErrBufferFull`。
+
+### 行为变化（是修复，但要知道）
+
+1. **含 NUL 或非法 UTF-8 的文件不再进入快照**，即使它叫 `.md`。这类文件
+   对 LLM 没有价值，且会污染整个产物。实测：含 NUL 的 `logo.bin` 从
+   "7 个文件"变成"6 个文件 + 1 条 `[Binary file]` 跳过记录"。
+2. `--max-size` 在变更模式下**同时限制单文件 diff 的字节数**（默认 500KB）。
+3. `-a` 只关忽略规则，不打开二进制 gate（二进制文件永远不出正文）。
+
+### 不可变性测试
+
+`TestChangeOutputIsValidUTF8AndNULFree` 直接对两种模式的产物断言
+"合法 UTF-8 且不含 NUL"，覆盖三类会漏字节的文件；另有
+`TestGitDiffOnlyRespectsBinaryAndSizeGates`、`TestGitHistoryContentUsesNewestOccurrence`、
+`TestScanDirectorySkipsBinaryByContentNotExtension`。四处修复都做过反向验证
+（改回错误实现，对应用例确实失败）。

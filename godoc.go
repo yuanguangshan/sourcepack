@@ -172,12 +172,6 @@ func isSensitiveFile(name string) bool {
 	return false
 }
 
-var knownTextFiles = map[string]bool{
-	"Makefile": true, "Dockerfile": true, "Rakefile": true, "Gemfile": true,
-	"CMakeLists.txt": true, "Vagrantfile": true, "Jenkinsfile": true,
-	"README": true, "LICENSE": true, "CHANGELOG": true, "CONTRIBUTING": true,
-}
-
 var languageMap = map[string]string{
 	".go": "go", ".js": "javascript", ".ts": "typescript", ".py": "python",
 	".c": "c", ".cpp": "cpp", ".h": "cpp", ".hpp": "cpp", ".cc": "cpp",
@@ -775,7 +769,10 @@ func scanDirectory(config Config) ([]FileMetadata, Stats, []SkippedFile) {
 		}
 
 		// 流式扫描：前 1KB 判二进制 + 全文数行，全程不把文件读进内存
-		lineCount, isBinary, err := scanFileStats(path, !isKnownTextFile(relPath))
+		// 一律探测二进制：扩展名不能作为"内容是文本"的保证——实测一个
+		// 含 NUL 字节的 .md 会被当文本写出，整个产物变成非法 UTF-8。
+		// 探测复用同一个 bufio 缓冲，成本约等于 0。
+		lineCount, isBinary, err := scanFileStats(path, true)
 		if err != nil {
 			skipped = append(skipped, SkippedFile{relPath, "Read error"})
 			stats.Skipped++
@@ -922,25 +919,32 @@ func shouldIgnoreFileReason(relPath string, config Config, matcher *gitignoreMat
 	return ""
 }
 
+// isBinaryBuffer 判断一段字节是否应按二进制处理。
+//
+// 判定标准（v1.8.1 起收紧，旧实现只在"非法 UTF-8"时才去找 NUL，
+// 于是 "abc\x00def" 这种合法 UTF-8 + NUL 的文件被当成文本，裸字节
+// 直接写进了 Markdown，整个产物变成非法 UTF-8）：
+//   - 含 NUL 字节 → 二进制（与 git 的 buffer_is_binary 同标准）；
+//   - 不是合法 UTF-8 → 也按二进制处理，否则产物里会混入裸字节。
 func isBinaryBuffer(buf []byte) bool {
 	if len(buf) == 0 {
 		return false
 	}
-	if !utf8.Valid(buf) {
-		for _, b := range buf {
-			if b == 0 {
-				return true
-			}
-		}
+	if bytes.IndexByte(buf, 0) >= 0 {
+		return true
 	}
-	return false
+	return !utf8.Valid(buf)
 }
 
-// binaryProbeSize 判断二进制时只探测文件头部字节（与 http.DetectContentType 思路一致）。
-const binaryProbeSize = 1024
+// binaryProbeSize 判断二进制时探测的头部字节数。
+// 取 8000 与 git 的 buffer_is_binary 一致（git 只看前 8000 字节里有没有 NUL），
+// 避免"git 说 binary、我们说是文本"或反过来的错位。
+const binaryProbeSize = 8000
 
-// scanFileStats 流式获取文件的行数，并按需探测头部判断是否二进制。
+// scanFileStats 流式获取文件的行数，并探测头部判断是否二进制。
 // 只顺序读一遍文件即可完成两项工作，避免将整个文件读入内存。
+// probeBinary 目前调用方一律传 true（见上面的注释），保留参数是为了
+// 明确"这一步是可以被显式关掉的"。
 func scanFileStats(path string, probeBinary bool) (lineCount int, isBinary bool, err error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -948,10 +952,13 @@ func scanFileStats(path string, probeBinary bool) (lineCount int, isBinary bool,
 	}
 	defer f.Close()
 
-	reader := bufio.NewReader(f)
+	// 缓冲区必须 >= binaryProbeSize：bufio.Peek(n) 在 n 超过内部缓冲时
+	// 直接返回 ErrBufferFull（与文件实际大小无关），8000 字节的探测窗口
+	// 配上默认 4096 的缓冲会让所有非白名单文本文件变成"Read error"。
+	reader := bufio.NewReaderSize(f, 32*1024)
 	if probeBinary {
 		head, perr := reader.Peek(binaryProbeSize)
-		if perr != nil && perr != io.EOF {
+		if perr != nil && perr != io.EOF && perr != bufio.ErrBufferFull {
 			return 0, false, perr
 		}
 		if isBinaryBuffer(head) {
@@ -972,16 +979,6 @@ func scanFileStats(path string, probeBinary bool) (lineCount int, isBinary bool,
 			return 0, false, rerr
 		}
 	}
-}
-
-func isKnownTextFile(relPath string) bool {
-	name := filepath.Base(relPath)
-	if knownTextFiles[name] {
-		return true
-	}
-	ext := strings.ToLower(filepath.Ext(relPath))
-	_, ok := languageMap[ext]
-	return ok
 }
 
 func countLinesBuffer(data []byte) int {

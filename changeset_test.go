@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/spf13/pflag"
 )
@@ -39,6 +40,19 @@ func TestParseNameStatusZ(t *testing.T) {
 		if got.Status != w.status || got.Path != w.path || got.OldPath != w.old {
 			t.Errorf("第 %d 条 = {%q %q %q}，期望 {%q %q %q}", i, got.Status, got.Path, got.OldPath, w.status, w.path, w.old)
 		}
+	}
+}
+
+// 这个 error 返回以前永远是 nil，三个调用方都在认真检查它——死通道。
+// 现在做成真校验：畸形输出必须报错，而不是静默丢掉变更。
+func TestParseNameStatusZRejectsMalformed(t *testing.T) {
+	for _, bad := range []string{"R100\x00only-old-path\x00", "M\x00", "M", "A\x00"} {
+		if _, err := parseNameStatusZ(bad); err == nil {
+			t.Errorf("畸形输入 %q 应当报错而不是静默截断", bad)
+		}
+	}
+	if out, err := parseNameStatusZ(""); err != nil || len(out) != 0 {
+		t.Errorf("空输入应返回空结果且无错误: %v %v", out, err)
 	}
 }
 
@@ -139,20 +153,44 @@ func TestSplitPatchCountsAndPaths(t *testing.T) {
 	}
 }
 
-func TestCapDiffLines(t *testing.T) {
+func TestCapDiff(t *testing.T) {
 	body := "l1\nl2\nl3\nl4\nl5\n"
-	if got, omitted := capDiffLines(body, 10); omitted != 0 || got != body {
+	if got, omitted := capDiff(body, 10, 0); omitted != 0 || got != body {
 		t.Errorf("未超限时不该改动: omitted=%d got=%q", omitted, got)
 	}
-	got, omitted := capDiffLines(body, 2)
+	got, omitted := capDiff(body, 2, 0)
 	if omitted != 3 {
 		t.Errorf("omitted = %d，期望 3", omitted)
 	}
 	if !strings.HasPrefix(got, "l1\nl2\n") || !strings.Contains(got, "3 of 5 diff lines omitted") {
 		t.Errorf("截断结果不符合预期:\n%s", got)
 	}
-	if got, _ := capDiffLines(body, 0); got != body {
-		t.Errorf("maxLines=0 应视为不限制")
+	if got, _ := capDiff(body, 0, 0); got != body {
+		t.Errorf("maxLines=0/maxBytes=0 应视为不限制")
+	}
+
+	// 字节上限：单行超长文件（例如一行 20MB）用行数截不住，必须按字节兜住。
+	var big strings.Builder
+	for i := 0; i < 200; i++ {
+		big.WriteString(strings.Repeat("x", 20))
+		big.WriteByte('\n')
+	}
+	capped, omitted := capDiff(big.String(), 2000, 1024)
+	if omitted == 0 {
+		t.Fatal("超过字节上限时应截断")
+	}
+	if len(capped) > 1024+120 {
+		t.Errorf("字节截断没兜住：正文 %d 字节（上限 1024）", len(capped))
+	}
+	if !strings.Contains(capped, "--max-size 1 KB") {
+		t.Errorf("字节截断缺少标注:\n%s", capped[len(capped)-120:])
+	}
+
+	// 单个超长行、没有任何换行：行数上限完全无效，字节上限必须生效
+	oneLine := strings.Repeat("y", 2<<20)
+	capped, omitted = capDiff(oneLine, 2000, 4096)
+	if omitted == 0 || len(capped) > 4096+120 {
+		t.Errorf("单行超长正文没被字节上限兜住: omitted=%d len=%d", omitted, len(capped))
 	}
 }
 
@@ -165,7 +203,7 @@ func TestTrimToLastCompleteChunk(t *testing.T) {
 }
 
 func TestSyntheticNewFileDiff(t *testing.T) {
-	diff, total, omitted := syntheticNewFileDiff("新 文件.md", []byte("a\nb\nc\n"), 0)
+	diff, total, omitted := syntheticNewFileDiff("新 文件.md", []byte("a\nb\nc\n"), 0, 0)
 	if total != 3 || omitted != 0 {
 		t.Errorf("total/omitted = %d/%d，期望 3/0", total, omitted)
 	}
@@ -181,10 +219,10 @@ func TestSyntheticNewFileDiff(t *testing.T) {
 			t.Errorf("生成的补丁缺少 %q:\n%s", want, diff)
 		}
 	}
-	if _, _, omitted := syntheticNewFileDiff("x.txt", []byte("1\n2\n3\n4\n"), 2); omitted != 2 {
+	if _, _, omitted := syntheticNewFileDiff("x.txt", []byte("1\n2\n3\n4\n"), 2, 0); omitted != 2 {
 		t.Errorf("按 --max-diff-lines 截断失败: omitted=%d", omitted)
 	}
-	if d, total, _ := syntheticNewFileDiff("empty.txt", []byte{}, 0); total != 0 || !strings.Contains(d, "@@ -0,0 +1,0 @@") {
+	if d, total, _ := syntheticNewFileDiff("empty.txt", []byte{}, 0, 0); total != 0 || !strings.Contains(d, "@@ -0,0 +1,0 @@") {
 		t.Errorf("空文件补丁异常: total=%d\n%s", total, d)
 	}
 }
@@ -588,6 +626,140 @@ func TestGitUntrackedLinesCountTowardTotals(t *testing.T) {
 	}
 	if cs.TotalDiffLines != 3 {
 		t.Errorf("TotalDiffLines = %d，期望 3（未跟踪文件按正文行数计入总量告警）", cs.TotalDiffLines)
+	}
+}
+
+// 回归：--diff-only 的合成补丁必须和默认模式走同一道 gate。
+//
+// 背景：24f54cb 里合成补丁生成在主循环的成功路径内（天然在所有
+// noContent gate 之后）；9b20203 把它挪成独立循环后只检查 filteredReason，
+// 于是未跟踪的二进制 / 超限文件也被合成成 diff——二进制裸字节进产物，
+// 60MB 的未跟踪文件实测产出 62MB 的 Markdown（--max-size 完全失效）。
+func TestGitDiffOnlyRespectsBinaryAndSizeGates(t *testing.T) {
+	dir := newGitFixture(t)
+	writeFile(t, dir, "seed.txt", "package a\n")
+	gitIn(t, dir, "add", "-A")
+	gitIn(t, dir, "commit", "-q", "-m", "init")
+	writeFile(t, dir, "new.bin", "PNG\x00\x00\x01\x02BIN\x00\xff\xfe")
+	writeFile(t, dir, "huge.txt", strings.Repeat("line\n", 2000)) // 10KB > 1KB 上限
+
+	cfg := gitConfig(Config{GitDiff: true, DiffOnly: true, MaxDiffLines: 2000, MaxFileSize: 1024}, dir)
+	cs, files, stats, _ := collectForTest(t, cfg)
+
+	bin := changeByPath(cs, "new.bin")
+	if bin == nil || bin.Diff != "" {
+		t.Errorf("二进制的未跟踪文件在 --diff-only 下不该有合成 diff: %+v", bin)
+	}
+	if bin == nil || !bin.Binary {
+		t.Errorf("二进制判定应传递到 Change 上（否则标记与文案都说成文本）: %+v", bin)
+	}
+	huge := changeByPath(cs, "huge.txt")
+	if huge == nil || huge.Diff != "" || huge.NoContent != "Size limit" {
+		t.Errorf("超过 --max-size 的未跟踪文件不该被合成 diff: %+v", huge)
+	}
+	for _, f := range files {
+		if f.RelPath == "new.bin" || f.RelPath == "huge.txt" {
+			t.Errorf("被 gate 拦下的文件不该进内容候选: %s", f.RelPath)
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := writeChangeContent(cfg, files, stats, cs, &buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if len(out) > 4096 {
+		t.Errorf("--diff-only 产物 %d 字节：超限/二进制文件仍被写进来了", len(out))
+	}
+	if strings.ContainsRune(out, 0) {
+		t.Error("产物里出现了 NUL 字节")
+	}
+	if !utf8.ValidString(out) {
+		t.Error("产物不是合法 UTF-8")
+	}
+	if strings.Contains(out, "full content included below") {
+		t.Error("二进制文件不该声称\"full content included below\"（自相矛盾）")
+	}
+}
+
+// -G 下同一路径可能出现在多个提交里：正文读的是"当前工作区"，
+// 判定就必须用最新一次出现的元数据（旧实现取最旧那次）。
+func TestGitHistoryContentUsesNewestOccurrence(t *testing.T) {
+	// 旧二进制 → 新文本：正文应当输出
+	dir := newGitFixture(t)
+	writeFile(t, dir, "f.txt", "BIN\x00\x01payload\n")
+	gitIn(t, dir, "add", "-A")
+	gitIn(t, dir, "commit", "-q", "-m", "c1 binary")
+	writeFile(t, dir, "f.txt", "plain text\n")
+	gitIn(t, dir, "add", "-A")
+	gitIn(t, dir, "commit", "-q", "-m", "c2 text")
+
+	cs, files, _, _ := collectForTest(t, gitConfig(Config{GitLog: 2, MaxDiffLines: 2000}, dir))
+	found := false
+	for _, f := range files {
+		if f.RelPath == "f.txt" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("最新状态已是文本，正文不该被省略: %+v", changeByPath(cs, "f.txt"))
+	}
+
+	// 旧文本 → 新二进制：正文与 diff 都不该输出
+	dir2 := newGitFixture(t)
+	writeFile(t, dir2, "g.txt", "plain\n")
+	gitIn(t, dir2, "add", "-A")
+	gitIn(t, dir2, "commit", "-q", "-m", "c1 text")
+	writeFile(t, dir2, "g.txt", "BIN\x00\x01payload\n")
+	gitIn(t, dir2, "add", "-A")
+	gitIn(t, dir2, "commit", "-q", "-m", "c2 binary")
+
+	cs2, files2, _, _ := collectForTest(t, gitConfig(Config{GitLog: 2, MaxDiffLines: 2000}, dir2))
+	for _, f := range files2 {
+		if f.RelPath == "g.txt" {
+			t.Errorf("最新状态是二进制，正文不该输出: %s", f.RelPath)
+		}
+	}
+	// 二进制变更保留 git 自己的安全提示（"Binary files ... differ"），
+	// 但绝不能带原始字节
+	if g := changeByPath(cs2, "g.txt"); g == nil || !g.Binary || g.NoContent != "Binary file" {
+		t.Errorf("二进制变更应标记 Binary 且不输出正文: %+v", g)
+	} else if strings.ContainsRune(g.Diff, 0) {
+		t.Errorf("二进制 diff 里出现裸字节: %q", g.Diff)
+	}
+}
+
+// 产出必须是合法 UTF-8 且不含 NUL —— 这是"喂给 AI 的 Markdown"的硬约束。
+// 覆盖三类会漏字节的文件：真二进制、无 NUL 非法 UTF-8、合法 UTF-8 但含 NUL。
+func TestChangeOutputIsValidUTF8AndNULFree(t *testing.T) {
+	dir := newGitFixture(t)
+	writeFile(t, dir, "tracked_bin.dat", "PNG\x00\x00\x01init\n")
+	writeFile(t, dir, "tracked_nonul.dat", "\x80\x81\x82\xff-init\n")
+	writeFile(t, dir, "tracked_utf8nul.txt", "abc\x00init\n")
+	writeFile(t, dir, "stray_nul.md", "text\nstray\x00init\n")
+	gitIn(t, dir, "add", "-A", "-f", ".")
+	gitIn(t, dir, "commit", "-q", "-m", "init")
+	writeFile(t, dir, "tracked_bin.dat", "PNG\x00\x00\x01changed\n")
+	writeFile(t, dir, "tracked_nonul.dat", "\x80\x81\x82\xff-changed\n")
+	writeFile(t, dir, "tracked_utf8nul.txt", "abc\x00changed\n")
+	writeFile(t, dir, "stray_nul.md", "text\nstray\x00changed\n")
+	writeFile(t, dir, "untracked.bin", "PNG\x00\x00\x01new\n")
+	writeFile(t, dir, "untracked_nonul.dat", "\xfe\xff\x80new\n")
+
+	for _, diffOnly := range []bool{false, true} {
+		cfg := gitConfig(Config{GitDiff: true, DiffOnly: diffOnly, MaxDiffLines: 2000}, dir)
+		cs, files, stats, _ := collectForTest(t, cfg)
+		var buf bytes.Buffer
+		if err := writeChangeContent(cfg, files, stats, cs, &buf); err != nil {
+			t.Fatal(err)
+		}
+		out := buf.String()
+		if strings.ContainsRune(out, 0) {
+			t.Errorf("diff-only=%v: 产物含 NUL 字节", diffOnly)
+		}
+		if !utf8.ValidString(out) {
+			t.Errorf("diff-only=%v: 产物不是合法 UTF-8", diffOnly)
+		}
 	}
 }
 

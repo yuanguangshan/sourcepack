@@ -35,6 +35,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -397,11 +398,11 @@ func collectWorkingTree(g *gitRunner, config *Config, cs *ChangeSet) error {
 	byPath := indexChunks(chunks)
 	changeIndex := indexChanges(changes)
 	for _, ch := range changes {
-		applyChunk(ch, byPath, config.MaxDiffLines)
+		applyChunk(ch, byPath, config.MaxDiffLines, config.MaxFileSize)
 		ch.Staged = stagedSet[ch.Path]
 		ch.Unstaged = unstagedSet[ch.Path]
 	}
-	changes = appendUnmatchedChunks(changes, changeIndex, chunks, byPath, config.MaxDiffLines)
+	changes = appendUnmatchedChunks(changes, changeIndex, chunks, byPath, config.MaxDiffLines, config.MaxFileSize)
 	for _, p := range untracked {
 		changes = append(changes, &Change{Path: p, Status: "??", Untracked: true})
 	}
@@ -505,9 +506,9 @@ func collectHistory(g *gitRunner, config *Config, cs *ChangeSet) error {
 		byPath := indexChunks(chunks)
 		changeIndex := indexChanges(changes)
 		for _, ch := range changes {
-			applyChunk(ch, byPath, config.MaxDiffLines)
+			applyChunk(ch, byPath, config.MaxDiffLines, config.MaxFileSize)
 		}
-		changes = appendUnmatchedChunks(changes, changeIndex, chunks, byPath, config.MaxDiffLines)
+		changes = appendUnmatchedChunks(changes, changeIndex, chunks, byPath, config.MaxDiffLines, config.MaxFileSize)
 		sort.SliceStable(changes, func(i, j int) bool { return changes[i].Path < changes[j].Path })
 		grp.Changes = changes
 	}
@@ -575,6 +576,8 @@ func summarizeChangeSet(cs *ChangeSet) {
 func markPaths(nsOut string, set map[string]bool, includeOldPath bool) {
 	changes, err := parseNameStatusZ(nsOut)
 	if err != nil {
+		// 这里只负责 staged/unstaged 标记，解析失败不影响主清单
+		// （主清单解析失败会直接让整个命令报错）
 		return
 	}
 	for _, ch := range changes {
@@ -598,7 +601,7 @@ func indexChanges(changes []*Change) map[string]*Change {
 // appendUnmatchedChunks 是防御性兜底：patch 里出现、但 --name-status
 // 清单里没有的文件也要输出，否则会静默丢内容（正常情况下不该发生，
 // 例如 git 版本差异导致两侧排序不一致时）。
-func appendUnmatchedChunks(changes []*Change, index map[string]*Change, chunks []patchChunk, byPath map[string]*patchChunk, maxDiffLines int) []*Change {
+func appendUnmatchedChunks(changes []*Change, index map[string]*Change, chunks []patchChunk, byPath map[string]*patchChunk, maxDiffLines int, maxDiffBytes int64) []*Change {
 	for _, ck := range chunks {
 		if ck.Path == "" {
 			continue
@@ -607,7 +610,7 @@ func appendUnmatchedChunks(changes []*Change, index map[string]*Change, chunks [
 			continue
 		}
 		ch := &Change{Path: ck.Path, Status: "M"}
-		applyChunk(ch, byPath, maxDiffLines)
+		applyChunk(ch, byPath, maxDiffLines, maxDiffBytes)
 		changes = append(changes, ch)
 		index[ck.Path] = ch
 	}
@@ -636,15 +639,15 @@ func parseNameStatusZ(s string) ([]*Change, error) {
 			continue
 		}
 		if len(code) > 1 && (code[0] == 'R' || code[0] == 'C') {
-			if i+2 >= len(fields) {
-				break
+			if i+2 >= len(fields) || fields[i+1] == "" || fields[i+2] == "" {
+				return out, fmt.Errorf("malformed --name-status -z output: %q is missing the old/new path pair", code)
 			}
 			out = append(out, &Change{Status: code, OldPath: fields[i+1], Path: fields[i+2]})
 			i += 3
 			continue
 		}
-		if i+1 >= len(fields) {
-			break
+		if i+1 >= len(fields) || fields[i+1] == "" {
+			return out, fmt.Errorf("malformed --name-status -z output: status %q has no path", code)
 		}
 		out = append(out, &Change{Status: code, Path: fields[i+1]})
 		i += 2
@@ -850,8 +853,24 @@ func unquoteGitPath(s string) string {
 	return b.String()
 }
 
+// diffBodyLooksBinary 检查 git 给出的 diff 正文里有没有裸字节。
+//
+// 为什么需要这层：git 的二进制判定只看前 8000 字节里有没有 NUL，
+// 所以"前 8000 字节干净、后面才有 NUL"的文件、以及无 NUL 但非法
+// UTF-8 的文件（Latin-1/GBK 文本、部分裸二进制），git 都会输出**逐行
+// 文本 diff**，正文里就是原始字节。直接落盘会让整个产物变成非法 UTF-8。
+func diffBodyLooksBinary(body string) bool {
+	if body == "" {
+		return false
+	}
+	if strings.IndexByte(body, 0) >= 0 {
+		return true
+	}
+	return !utf8.ValidString(body)
+}
+
 // applyChunk 把 patch 分块的结果贴到一个 Change 上，并按需截断。
-func applyChunk(ch *Change, byPath map[string]*patchChunk, maxLines int) {
+func applyChunk(ch *Change, byPath map[string]*patchChunk, maxLines int, maxBytes int64) {
 	ck := byPath[ch.Path]
 	if ck == nil && ch.OldPath != "" {
 		ck = byPath[ch.OldPath]
@@ -860,34 +879,109 @@ func applyChunk(ch *Change, byPath map[string]*patchChunk, maxLines int) {
 		return
 	}
 	ch.Added, ch.Deleted, ch.Binary = ck.Added, ck.Deleted, ck.Binary
-	ch.Diff = ck.Body
 	ch.DiffFull = strings.Count(ck.Body, "\n")
-	if maxLines > 0 {
-		if trimmed, omitted := capDiffLines(ck.Body, maxLines); omitted > 0 {
-			ch.Diff = trimmed
-			ch.DiffOmitted = omitted
-		}
+
+	if diffBodyLooksBinary(ck.Body) {
+		// 不出正文，只保留清单与状态（渲染层会写 "Binary file"）
+		ch.Binary = true
+		return
+	}
+	if trimmed, omitted := capDiff(ck.Body, maxLines, maxBytes); omitted > 0 {
+		ch.Diff = trimmed
+		ch.DiffOmitted = omitted
+	} else {
+		ch.Diff = ck.Body
 	}
 }
 
-// capDiffLines 保留前 maxLines 行，返回截断后的正文与被省略的行数。
-func capDiffLines(body string, maxLines int) (string, int) {
+// splitDiffLines 切分 diff 正文，且不把结尾换行算成一行。
+func splitDiffLines(body string) []string {
+	lines := strings.Split(body, "\n")
+	if n := len(lines); n > 0 && lines[n-1] == "" {
+		lines = lines[:n-1]
+	}
+	return lines
+}
+
+// capDiff 截断 diff 正文：**先按字节、再按行**，返回正文与省略行数。
+//
+// 为什么必须先管字节：--max-diff-lines 只数行，单行超长文件
+// （压缩过的 JS/JSON、单行大文件）一行 20MB 也照样进产物。实测
+// 一个已跟踪的单行 20MB 文本会产出 40MB 的 Markdown。
+func capDiff(body string, maxLines int, maxBytes int64) (string, int) {
+	if maxBytes > 0 && int64(len(body)) > maxBytes {
+		return capDiffBytes(body, maxBytes)
+	}
 	if maxLines <= 0 {
 		return body, 0
 	}
-	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	lines := splitDiffLines(body)
 	if len(lines) <= maxLines {
 		return body, 0
 	}
 	omitted := len(lines) - maxLines
-	kept := lines[:maxLines]
 	var b strings.Builder
-	for _, ln := range kept {
+	for _, ln := range lines[:maxLines] {
 		b.WriteString(ln)
 		b.WriteByte('\n')
 	}
 	fmt.Fprintf(&b, "... [sourcepack] %d of %d diff lines omitted (--max-diff-lines %d)\n", omitted, len(lines), maxLines)
 	return b.String(), omitted
+}
+
+// capDiffBytes 按字节上限保留完整的行，超出部分丢弃并标注。
+// 单行本身就超上限时（压缩过的 JS/JSON、单行大文件）只能在该行内硬切，
+// 且必须切在 UTF-8 字符边界上，否则产物会变成非法 UTF-8。
+func capDiffBytes(body string, maxBytes int64) (string, int) {
+	lines := splitDiffLines(body)
+	var b strings.Builder
+	var used int64
+	kept := 0
+	cutMidLine := false
+	for _, ln := range lines {
+		add := int64(len(ln)) + 1
+		if used+add > maxBytes {
+			if kept == 0 {
+				if piece := truncateUTF8(ln, maxBytes-1); piece != "" {
+					b.WriteString(piece)
+					b.WriteByte('\n')
+					kept++
+					cutMidLine = true
+				}
+			}
+			break
+		}
+		b.WriteString(ln)
+		b.WriteByte('\n')
+		used += add
+		kept++
+	}
+	omitted := len(lines) - kept
+	if cutMidLine {
+		omitted++
+	}
+	switch {
+	case cutMidLine:
+		fmt.Fprintf(&b, "... [sourcepack] diff truncated at %d KB (fewer than one line kept); %d further lines omitted\n", maxBytes/1024, len(lines)-kept)
+	case omitted > 0:
+		fmt.Fprintf(&b, "... [sourcepack] %d of %d diff lines omitted (--max-size %d KB)\n", omitted, len(lines), maxBytes/1024)
+	}
+	return b.String(), omitted
+}
+
+// truncateUTF8 把字符串截到不超过 n 字节，并在必要时回退到完整的字符边界。
+func truncateUTF8(s string, n int64) string {
+	if n <= 0 {
+		return ""
+	}
+	if int64(len(s)) <= n {
+		return s
+	}
+	cut := s[:n]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut
 }
 
 // trimToLastCompleteChunk 把超出字节上限的 patch 截到最后一个完整文件块。
@@ -904,7 +998,7 @@ func trimToLastCompleteChunk(patch string) string {
 
 // syntheticNewFileDiff 为未跟踪文件造一个 git 风格的"新增文件"补丁。
 // 只在 --diff-only 下才需要：默认模式会直接输出全文，没必要重复一遍。
-func syntheticNewFileDiff(relPath string, content []byte, maxLines int) (string, int, int) {
+func syntheticNewFileDiff(relPath string, content []byte, maxLines int, maxBytes int64) (string, int, int) {
 	lines := strings.Split(strings.TrimRight(string(content), "\n"), "\n")
 	total := len(lines)
 	if total == 1 && lines[0] == "" {
@@ -917,8 +1011,20 @@ func syntheticNewFileDiff(relPath string, content []byte, maxLines int) (string,
 	}
 	shown := body
 	omitted := 0
+	var used int64
+	// 先按字节：单行超长的新文件（例如 60MB 单行）用行数截不住
+	if maxBytes > 0 {
+		for i, ln := range shown {
+			used += int64(len(ln)) + 1
+			if used > maxBytes {
+				omitted = len(shown) - i
+				shown = shown[:i]
+				break
+			}
+		}
+	}
 	if maxLines > 0 && len(shown) > maxLines {
-		omitted = len(shown) - maxLines
+		omitted += len(shown) - maxLines
 		shown = shown[:maxLines]
 	}
 	var b strings.Builder
@@ -932,7 +1038,7 @@ func syntheticNewFileDiff(relPath string, content []byte, maxLines int) (string,
 		b.WriteByte('\n')
 	}
 	if omitted > 0 {
-		fmt.Fprintf(&b, "... [sourcepack] %d of %d diff lines omitted (--max-diff-lines %d)\n", omitted, total, maxLines)
+		fmt.Fprintf(&b, "... [sourcepack] %d of %d diff lines omitted (new file)\n", omitted, total)
 	}
 	return b.String(), total, omitted
 }

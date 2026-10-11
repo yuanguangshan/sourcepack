@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"testing"
 )
 
@@ -96,6 +97,61 @@ func TestIsBinaryBuffer(t *testing.T) {
 	// Empty buffer
 	if isBinaryBuffer([]byte{}) {
 		t.Error("empty buffer should not be detected as binary")
+	}
+
+	// v1.8.1 收紧：非法 UTF-8（无 NUL）也算二进制，否则裸字节会写进 Markdown
+	if !isBinaryBuffer([]byte("\x80\x81\x82\xff")) {
+		t.Error("invalid UTF-8 without NUL should be detected as binary")
+	}
+
+	// v1.8.1 收紧：合法 UTF-8 + NUL。旧实现只在"非法 UTF-8"时才去找 NUL，
+	// 于是 "abc\x00def" 被当成文本，裸 NUL 直接进了产物。
+	if !isBinaryBuffer([]byte("abc\x00def\n")) {
+		t.Error("valid UTF-8 containing a NUL should be detected as binary")
+	}
+
+	// 中文等多字节 UTF-8 不能被误判
+	if isBinaryBuffer([]byte("中文内容\n第二行\n")) {
+		t.Error("UTF-8 中文不该被判成二进制")
+	}
+}
+
+// git 会为"前 8000 字节干净、后面才有 NUL"或无 NUL 的非法 UTF-8 文件
+// 输出逐行文本 diff，正文里是原始字节——这层安全网负责把它们挡在产物外。
+func TestDiffBodyLooksBinary(t *testing.T) {
+	if diffBodyLooksBinary("@@ -1 +1 @@\n-a\n+b\n") {
+		t.Error("普通 diff 正文不该被判成二进制")
+	}
+	if !diffBodyLooksBinary("@@ -1 +1 @@\n-\x00\n+\x01\n") {
+		t.Error("含 NUL 的 diff 正文应判为二进制")
+	}
+	if !diffBodyLooksBinary("@@ -1 +1 @@\n-\x80\x81\n+\xff\n") {
+		t.Error("含非法 UTF-8 的 diff 正文应判为二进制")
+	}
+}
+
+// 扩展名不能作为"内容是文本"的保证：一个含 NUL 字节的 .md 会让整个
+// 快照变成非法 UTF-8。这条守的是"一律按内容探测，不看扩展名"。
+func TestScanDirectorySkipsBinaryByContentNotExtension(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "ok.md"), "纯文本\n第二行\n")
+	mustWrite(t, filepath.Join(root, "stray_nul.md"), "text\nstray\x00nul\n")
+	mustWrite(t, filepath.Join(root, "bad.go"), "package main\n\x80\x81\n")
+
+	cfg := Config{RootDir: root, OutputFile: "out.md", MaxFileSize: 500 * 1024}
+	files, _, skipped := scanDirectory(cfg)
+
+	if len(files) != 1 || files[0].RelPath != "ok.md" {
+		t.Errorf("只应留下纯文本文件，实际 %+v", files)
+	}
+	reasons := map[string]string{}
+	for _, sk := range skipped {
+		reasons[sk.RelPath] = sk.Reason
+	}
+	for _, p := range []string{"stray_nul.md", "bad.go"} {
+		if reasons[p] != "Binary file" {
+			t.Errorf("%s 应因内容被判为二进制，实际 reason=%q", p, reasons[p])
+		}
 	}
 }
 
