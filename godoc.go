@@ -510,12 +510,14 @@ func run(config Config) error {
 
 // printUsage 打印用法说明：pflag 的 flag 列表 + 三段项目自己的说明。
 //
-// pflag 1.0.5 没有导出 Output()，只能把输出目标设回来（nil = 默认 stderr）。
+// PrintDefaults 写的是 FlagSet 自己的输出目标，所以这里临时切到 w，
+// 打完恢复成调用前那个目标（pflag ≥1.0.6 才有 Output()；go.mod 已升到 1.0.7）。
 func printUsage(w io.Writer, fs *pflag.FlagSet) {
+	prev := fs.Output()
 	fs.SetOutput(w)
-	defer fs.SetOutput(nil)
+	defer fs.SetOutput(prev)
 
-	fmt.Fprintf(w, "Usage of %s:\n", os.Args[0])
+	fmt.Fprintf(w, "Usage of %s:\n", programName())
 	fs.PrintDefaults()
 	fmt.Fprintln(w, "\nConvenience shortcuts:")
 	fmt.Fprintln(w, "  -a              Include all files (disable .gitignore + built-in ignores; .gdignore still applies)")
@@ -525,6 +527,19 @@ func printUsage(w io.Writer, fs *pflag.FlagSet) {
 	fmt.Fprintf(w, "\nEnvironment variables:\n")
 	fmt.Fprintf(w, "  SOURCEPACK_PUSH_URL    Remote URL for push (e.g. https://host/submit)\n")
 	fmt.Fprintf(w, "  SOURCEPACK_AUTH_KEY    X-Auth-Key for push authentication\n")
+}
+
+// programName 用法说明里的程序名。
+//
+// npm 包装器（index.js）直接 spawn 平台二进制，所以 os.Args[0] 会是
+// ".../sourcepack-darwin-arm64" 这样的完整路径——取 basename，
+// 再把平台后缀归一成 sourcepack，输出才像人话。
+func programName() string {
+	name := filepath.Base(os.Args[0])
+	if strings.HasPrefix(name, "sourcepack-") {
+		return "sourcepack"
+	}
+	return name
 }
 
 func initFlags(fs *pflag.FlagSet) {

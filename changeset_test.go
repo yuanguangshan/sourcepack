@@ -892,12 +892,49 @@ func TestHelpFlagAndUsageText(t *testing.T) {
 	}
 }
 
+func TestProgramNameNormalizesNpmBinarySuffix(t *testing.T) {
+	old := os.Args
+	defer func() { os.Args = old }()
+
+	os.Args = []string{"/opt/homebrew/lib/node_modules/sourcepack/sourcepack-darwin-arm64", "-h"}
+	if got := programName(); got != "sourcepack" {
+		t.Errorf("npm 包装器场景应显示 sourcepack，实际 %q", got)
+	}
+	os.Args = []string{"/usr/local/bin/gx"}
+	if got := programName(); got != "gx" {
+		t.Errorf("普通调用应显示 basename，实际 %q", got)
+	}
+}
+
+// printUsage 临时改 FlagSet 的输出目标来打印 flag 列表，
+// 打完必须恢复成调用者原来的目标（不是恢复成默认 stderr）。
+func TestPrintUsageRestoresOutput(t *testing.T) {
+	fs := newTestFlagSet()
+	callerOut := &bytes.Buffer{}
+	fs.SetOutput(callerOut)
+
+	var buf bytes.Buffer
+	printUsage(&buf, fs)
+
+	if fs.Output() != io.Writer(callerOut) {
+		t.Error("printUsage 应恢复调用者原来的输出目标")
+	}
+	if !strings.Contains(buf.String(), "Convenience shortcuts:") {
+		t.Errorf("用法说明没打到传入的 writer:\n%s", buf.String())
+	}
+	if strings.Contains(callerOut.String(), "Convenience shortcuts:") {
+		t.Error("用法说明不该泄漏到 FlagSet 原来的输出目标")
+	}
+}
+
 // pflag 的 (*FlagSet).usage() 在 f == CommandLine 时调的是包级 pflag.Usage；
 // 只设 fs.Usage 会让自定义说明丢失（v1.8 重构踩过这个分叉）。
 func TestUsageWiredForCommandLine(t *testing.T) {
-	initFlags(pflag.CommandLine)
+	// 必须先取值再 initFlags：initFlags 自己会覆盖 pflag.Usage，
+	// 按原来的顺序 oldUsage 存的就是被覆盖后的值，defer 等于没恢复
 	oldUsage := pflag.Usage
 	defer func() { pflag.Usage = oldUsage }()
+	initFlags(pflag.CommandLine)
 
 	r, w, err := os.Pipe()
 	if err != nil {

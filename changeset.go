@@ -512,7 +512,8 @@ func collectHistory(g *gitRunner, config *Config, cs *ChangeSet) error {
 		if clipped {
 			patch = trimToLastCompleteChunk(patch)
 			cs.PatchClipped = true
-			cs.Warnings = append(cs.Warnings, "diff output exceeded 64 MB and was truncated at a file boundary")
+			// 警告在循环外统一记一次：-G N 下多个 commit 都可能超限，
+			// 在循环里 append 会让同一条警告重复出现
 		}
 		chunks := splitPatch(patch)
 		byPath := indexChunks(chunks)
@@ -523,6 +524,10 @@ func collectHistory(g *gitRunner, config *Config, cs *ChangeSet) error {
 		changes = appendUnmatchedChunks(changes, changeIndex, chunks, byPath, config.MaxDiffLines, config.MaxFileSize)
 		sort.SliceStable(changes, func(i, j int) bool { return changes[i].Path < changes[j].Path })
 		grp.Changes = changes
+	}
+
+	if cs.PatchClipped {
+		cs.Warnings = append(cs.Warnings, "diff output exceeded 64 MB and was truncated at a file boundary")
 	}
 
 	cs.Commits = groups
@@ -1028,7 +1033,11 @@ func syntheticNewFileDiff(relPath string, content []byte, maxLines int, maxBytes
 	shown := body
 	omitted := 0
 	var used int64
-	// 先按字节：单行超长的新文件（例如 60MB 单行）用行数截不住
+	// 先按字节：单行超长的新文件（例如 60MB 单行）用行数截不住。
+	//
+	// 注意这里与 capDiffBytes 有意不同：那边会对超限的单行做 truncateUTF8
+	// 硬切（因为那行本来就在 git 的 diff 里，切一半也比丢掉强）；新文件是
+	// 我们自己合成的，宁可不造这一行，也不要产出半行假装是文件内容。
 	if maxBytes > 0 {
 		for i, ln := range shown {
 			used += int64(len(ln)) + 1

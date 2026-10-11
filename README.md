@@ -502,6 +502,19 @@ git 真值: R100 src/deep/old.go→new.go / M src/main.go / A src/staged_new.go
 并以 2 退出。现在两份 Usage 都挂，并自己接管 `-h`：输出到 stdout、退出 0、
 不再有 pflag 噪声（未知参数仍然是退出 2 并打印同一份说明）。
 
+### `-h` 的行为变化（用户可见）
+
+| | 修前（含已发布的 v1.8.0） | 修后 |
+|---|---|---|
+| 三段自定义说明 | 全丢（`Convenience shortcuts:` / `Combinations:` / `Environment variables:`） | 全在 |
+| 退出码 | 2 | **0** |
+| 输出里多一句 | `pflag: help requested` | 无 |
+| 帮助内容输出到 | stderr | **stdout**（`gx -h \| less` 可用） |
+| 未知参数 | 打印同一份说明 + exit 2 | 不变 |
+
+顺带把 pflag 从 v1.0.5 升到 v1.0.7（v1.0.6+ 才导出 `Output()`，
+`printUsage` 才能精确恢复调用者的输出目标而不是一律恢复成 stderr）。
+
 ### 其余健壮性修复（内部，不改变用户可见行为）
 
 | 位置 | 问题 |
