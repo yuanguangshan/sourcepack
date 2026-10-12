@@ -484,6 +484,45 @@ cat rescue.txt
 4. 一个提交既没有分支指向、也没有 tag、reflog 也已过期——它一定被删了吗？
 5. 为什么 sourcepack 判断"分支名"要先用 `symbolic-ref` 而不是直接 `rev-parse HEAD`？
 
+<details>
+<summary>点开看答案</summary>
+
+1. **在"引用文件的值"这一层等价，命令行为不同。** 两者写出的 `.git/refs/heads/new`
+   内容完全一致（实测同为 HEAD 的哈希 + 一个换行）。差别有三处：① `git branch`
+   会拒绝重名（实测 `fatal: a branch named 'newbranch' already exists`），
+   `git update-ref` 不做存在性校验、同名静默覆盖；② reflog 文案不同（`git branch`
+   写 `branch: Created from main`，`update-ref` 写一条空消息记录）；③ `git branch`
+   一定写进 `refs/heads/`，而 `update-ref` 按你给的路径原样写文件——实测
+   `git update-ref new3 HEAD` 会在 `.git/new3` 造出一个 `git show-ref` /
+   `for-each-ref` 都看不见的"引用"。这正是 3.1"引用只是文件"的直接后果。
+
+2. **`~1` 走的是提交图的形状，`@{1}` 走的是你的操作史。** `HEAD~1` 沿**第一父**
+   往回一代，描述的是提交之间客观的 `parent` 边（3.5 速查表）；`HEAD@{1}` 是 HEAD
+   的 reflog 里的上一步，描述的是本地真实发生过的操作序列（3.8）。实测：把 HEAD
+   硬重置到根提交后，`git rev-parse HEAD~1` 直接失败（根提交没有父），而 `HEAD@{1}`
+   仍指向刚被 reset 掉的那个提交——3.8 的"后悔药"能成立，靠的就是这个区别。
+
+3. **因为 reflog 是本地的操作日志，不是仓库内容。** `clone` / `fetch` 传输的是
+   对象与引用（ref → 哈希），而 reflog 放在 `.git/logs/` 下，既不是对象、也不作为
+   一种引用参与传输（3.8 观察 2）。实测：`git clone` 之后新仓库的 `git reflog`
+   只有一条 `clone: from <路径>`，源仓库那些 `commit: ...` 一条都没带过来；
+   注意新仓库里 `.git/logs/HEAD` 是存在的，只是内容从 clone 那一刻重新开始。
+
+4. **不一定——判据是"有没有被 gc 清掉"，不是"有没有引用"。** 对象不可变（第 2 章），
+   只要还没被 `gc` prune，就能按哈希直接读出来：`git show <sha>`，这正是 3.9 说的
+   dangling 状态。实测：手工造一个从未被引用的提交，`git log --all` 里 0 条，
+   但 `git fsck --unreachable` 能列出它、`git show <sha>` 正常输出。3.9 的表说明：
+   要真正消失，得"reflog 过期 + 不可达"同时满足、再被 gc 清理。
+
+5. **因为两个命令回答的是不同问题：`symbolic-ref` 问"名字"，`rev-parse` 问"值"。**
+   对照 3.7 那张实测表：detached HEAD 时 `rev-parse HEAD` 照样成功（有值），只有
+   `symbolic-ref` 会失败（`fatal: ref HEAD is not a symbolic ref`）；unborn HEAD
+   反过来——`symbolic-ref` 成功拿到 `main`、`rev-parse` 退出码 128。所以只看
+   `rev-parse` 分不出"在分支上"和"detached"，也就拼不出 sourcepack 的三段式
+   （`changeset.go:282-288`，实测输出 `Branch: detached at aa686d8`）。
+
+</details>
+
 ---
 
 ## 3.12 小结

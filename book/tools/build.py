@@ -145,6 +145,71 @@ def collect_section_ids(md_text: str) -> set:
     return ids
 
 
+def check_self_test_answers(md_text: str) -> list:
+    """
+    逐章校验"自测题"与"答案"配套：每章恰好一个答案块，且答案条数==题目条数。
+
+    为什么值得写：12 章共 60+ 道题，答案由多人分别补写，靠肉眼核对一定会漏。
+    这里把它变成构建期的硬校验——条数不一致就构建失败并指出是第几章、
+    题几道、答案几条。这样"漏答一道题"不可能混进发布产物。
+    """
+    problems = []
+    lines = md_text.split("\n")
+
+    # 按章切分（## 第 N 章 ... 到下一个 ## 第 N 章 / ## 附录）
+    bounds = []
+    for i, l in enumerate(lines):
+        m = re.match(r"^## 第 (\d+) 章", l)
+        if m:
+            bounds.append((int(m.group(1)), i))
+    for k, (no, start) in enumerate(bounds):
+        end = bounds[k + 1][1] if k + 1 < len(bounds) else len(lines)
+        body = lines[start:end]
+
+        # 在章内找"自测题"标记（标题式或粗体式）
+        qi = None
+        for j, l in enumerate(body):
+            if re.match(r"^#{2,4}\s+.*自测题", l) or re.match(r"^\*\*自测题", l):
+                qi = j
+                break
+        if qi is None:
+            problems.append(f"第 {no} 章找不到「自测题」小节")
+            continue
+
+        # 题目：自测题标记之后、<details> 之前的编号行。
+        # 必须在"下一个标题"或 `---` 处停下 —— 否则会把下一节的编号列表
+        # （例如第 12 章 12.12 的结课要点）也算成题目，得到 9 道这种假数字。
+        n_q, details_start = 0, None
+        for j in range(qi + 1, len(body)):
+            l = body[j]
+            if l.strip().startswith("<details>"):
+                details_start = j
+                break
+            if re.match(r"^#{1,6}\s+", l) or l.strip() == "---":
+                break
+            if re.match(r"^\d+\.\s+\S", l):
+                n_q += 1
+        if details_start is None:
+            problems.append(f"第 {no} 章有 {n_q} 道自测题，但没有「点开看答案」块")
+            continue
+
+        # 答案：<details> 内、</details> 之前的编号行
+        n_a, closed = 0, False
+        for j in range(details_start + 1, len(body)):
+            if body[j].strip().startswith("</details>"):
+                closed = True
+                break
+            if re.match(r"^\d+\.\s+\S", body[j]):
+                n_a += 1
+        if not closed:
+            problems.append(f"第 {no} 章的答案块缺少 </details> 收尾")
+            continue
+        if n_a != n_q:
+            problems.append(
+                f"第 {no} 章自测题与答案条数不符：题目 {n_q} 道、答案 {n_a} 条")
+    return problems
+
+
 def find_absolute_path_leaks(md_text: str) -> list:
     """
     找出泄漏进书稿的**作者本机绝对路径**。
@@ -702,6 +767,9 @@ def verify(md_text: str, expected_chapters: int = 12):
         problems.append(
             f"{len(bad_anchor)} 处内部锚点链接指向不存在的锚点："
             + "; ".join(f"第 {ln} 行 → #{a}" for ln, a in bad_anchor[:6]))
+
+    # 每章自测题必须配等量的答案（缺答/多答一律构建失败）
+    problems.extend(check_self_test_answers(md_text))
 
     # 作者本机绝对路径绝不能泄漏进给读者的命令（读者照抄就会 fatal）。
     leak = find_absolute_path_leaks(md_text)

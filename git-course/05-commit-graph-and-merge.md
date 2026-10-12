@@ -154,9 +154,22 @@ $ git log --first-parent --oneline -4  # 只看第一父链
 aa686d8 docs: v2.0.1 记录（...）
 ```
 
-**用途**：在"主干历史"视图里（`git log --first-parent`、`git blame` 的默认策略、
-某些 CI 的变更检测）人们只关心"主线推进了哪些点"，
-特性分支内部的中间提交（可能很脏）被折叠。这也是 `-G` 处理合并提交时取第一父的理由（见 5.8）。
+**用途**：在"主干历史"视图里（`git log --first-parent`、某些 CI 的变更检测）
+人们只关心"主线推进了哪些点"，特性分支内部的中间提交（可能很脏）被折叠。
+这也是 `-G` 处理合并提交时取第一父的理由（见 5.8）。
+
+> ⚠️ **不要把 `git blame` 算进这个视图。** 它的**默认**行为是走进第二父：
+> 一行若由特性分支改出，默认归给**特性分支的那个提交**；
+> 只有显式 `git blame --first-parent` 才会把它归给合并提交。实测：
+>
+> ```bash
+> $ git blame f.txt | sed -n '2p'              # 默认
+> 7afc2076 (t ... 2) FEAT                      # ← feat change：特性分支的提交
+> $ git blame --first-parent f.txt | sed -n '2p'
+> 2223d510 (t ... 2) FEAT                      # ← merge feat：合并提交
+> ```
+>
+> 想按"主干视角"追责，得自己加 `--first-parent`——**默认值不站在你这边**。
 
 ---
 
@@ -370,6 +383,39 @@ gx -g --rev "$(git merge-base x1 x2)" --dry-run -d . | grep "Files changed"
 3. 合并**完成之后**，`git diff main...feature` 为什么不显示任何东西？
 4. `git diff A..B` 与 `git diff A...B` 分别等于哪个显式命令？
 5. `git log --first-parent` 在什么场景下是"正确视图"？给出两个例子。
+
+<details>
+<summary>点开看答案</summary>
+
+1. **`^1` 是"接收方"——执行 merge 时你所在分支的上一个提交；`^2` 是被并进来的分支尖端。**
+   顺序由**合并方向**决定：`git merge feat5` 时当前分支是 `main5`，所以 main5 侧是 `^1`、
+   feat5 尖端是 `^2`（5.4 实测 `parent 8f0c8ed` / `parent 7e94b86`，且 `HEAD^` 恒等于 `HEAD^1`）。
+   若反过来站在 feat5 上执行 `git merge main5`，两条边的身份就对调——第一父永远是"我刚才站的那条线"。
+
+2. **因为第一父的语义正是 GitHub 的 PR diff："这次合并给主线带来了什么"。**
+   5.8.1 里 `base = grp.Parents[0]` 取的就是第一父，产物中标注 `(merge — diff vs first parent)`；
+   对照 5.5 的量化实测，三种口径分别是 1 / 1 / 2 个文件——取第二父答的是"主线侧带来了什么"，
+   取 merge-base 答的是"整条分支的全量改动"，都不是审阅者要的答案。
+   代价是第二父侧的信息在逐提交产物里被折叠（要看得另跑 `git show -m` 或改用第二父口径）。
+
+3. **因为合并之后，被合并分支的尖端已经成了合并提交的祖先，于是 `merge-base(main, feature) == feature`**，
+   三点退化成 `git diff feature feature`，必然为空（5.7 的推论）。
+   我按 5.9 的步骤实测：合并完成后 `git diff --name-only main...feat5` 输出 0 个文件。
+   所以这不是 bug 而是正常结果；想测三点语义必须回到真正的分叉状态（5.6 重建的 `d1`/`d2` 就是为此）。
+
+4. **`git diff A..B` = `git diff A B`（两个尖端快照直接比）；`git diff A...B` = `git diff $(git merge-base A B) B`（从共同祖先比到 B）。**
+   我用 diff 文本的哈希比对验证了两条等价关系都严格成立。分叉实测：`d1..d2` 3 个文件，
+   其中 `d1b.txt` 是"被反向算进来"的删除（5.6 的解释：B 里没有 A 的新增文件，于是从 A 看 B"删掉了"它）；
+   `d1...d2` 2 个文件，与显式 merge-base 写法完全一致。
+
+5. **`--first-parent` 是"主干推进视图"，两个合适场景**：① **发布/里程碑历史**——
+   `git log --first-parent --oneline` 把特性分支的中间提交折叠掉（5.4 实测从 5 行缩到 4 行，`7d60908` 不再出现）；
+   ② **CI 的"这次合并动了什么"变更检测**——语义与 5.8.1 取第一父一致，只看合并给主线带来的净变化。
+   **注意 5.4 举的第三个例子不准确**：我实测默认 `git blame` 会走进第二父（把特性分支改的那行归给特性提交），
+   要只看主线必须显式 `git blame --first-parent`（此时该行归给合并提交）。
+   收益是视图干净，代价是丢掉特性分支内部的提交粒度。
+
+</details>
 
 ---
 

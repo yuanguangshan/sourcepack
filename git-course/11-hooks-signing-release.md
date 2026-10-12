@@ -301,8 +301,8 @@ checksum: { name_template: 'checksums.txt' }
 $ git tag -l 'v*' | wc -l
 42
 $ git for-each-ref --sort=creatordate --format='%(refname:short) %(creatordate:short) %(subject)' refs/tags | tail -4
-v1.8.0 2026-10-11 v1.8.0: Git 变更打包（-g / -G），打包未提交改动与最近 N 个提交
-v1.8.1 2026-10-12 v1.8.1: Windows 安装修复、整文件 UTF-8 判定、中文 Token 估算、godoc.go → main.go
+v1.8.2 2026-10-12 v1.8.2: 中文大文件误判二进制（P0）、diff 路径解析、输出目的地互斥、.env 模板、发布闸门与 Windows CI
+v1.9.0 2026-10-12 v1.9.0: 忽略匹配器按 git 语义重写（**/!/目录规则/嵌套 .gitignore，与 git check-ignore 逐条对齐）
 v2.0.0 2026-10-12 v2.0.0: -d 非法路径明确报错（行为变更）；-h 新增 Examples 示例段；参数手册 PARAMETERS.md
 v2.0.1 2026-10-12 v2.0.1: -h 末尾换成参数手册博客版（https://s.want.biz/sourcepack）
 ```
@@ -310,6 +310,12 @@ v2.0.1 2026-10-12 v2.0.1: -h 末尾换成参数手册博客版（https://s.want.
 **注意第三列**：`%(subject)` 取的是 **tag 对象的说明**（第 3 章：附注标签是独立对象）。
 所以 `git tag -a -m "..."` 写的那段话，就是**发布说明**——
 `git tag -l` 看不到它，`git for-each-ref`/`git show <tag>` 才能。
+
+> ⚠️ **但这条只对附注 tag 成立。** 上面的例子看着整齐，是因为那 4 个恰好都是附注 tag。
+> 本仓库 42 个 tag 里只有 **12 个是附注对象**，另 30 个是轻量 tag——
+> 对轻量 tag，`%(subject)` 会退回去显示**它指向的那个 commit 的标题**，
+> 看起来也像"说明"，但那是提交信息、不是发布说明，而且**没有地方能放说明、也无法签名**。
+> 想区分，用 `git cat-file -t <tag>`：附注返回 `tag`，轻量返回 `commit`。
 
 **这也是为什么发布要用 `-a`（附注）而不是轻量 tag**：
 轻量 tag 只是一个指向 commit 的引用，**没有地方放发布说明**，也无法签名。
@@ -400,6 +406,59 @@ git for-each-ref --sort=creatordate --format='%(refname:short) %(subject)' refs/
 5. `.goreleaser.yaml` 的 `{{ .Os }}` 与 Node 的 `os.platform()` 有什么区别？这个区别在 v1.8.0 造成了什么后果？
 6. sourcepack 的发布链路有哪三段？每段拦住什么类型的问题？
 
+<details>
+<summary>点开看答案</summary>
+
+1. **只有客户端钩子能绕过，服务端钩子不能**。`--no-verify` 是 git 命令行的本地
+   开关，git 在执行 `pre-commit`/`commit-msg`/`pre-push` 时会检查它并跳过，
+   所以本地钩子形同虚设（11.1 实测：坏提交退出码 1，加 `--no-verify` 后 0）。
+   服务端钩子跑在远端仓库自己的 git 进程里，你的命令行开关根本传不过去，
+   因此 `git push --no-verify origin forbidden` 依然得到
+   `! [remote rejected] … (pre-receive hook declined)`（11.2 实测）。
+
+2. **① 钩子不进版本库**：`git ls-files .git/hooks` 恒为 0，克隆不会带走，
+   新人 clone 后等于没装；`core.hooksPath .githooks` 也要每人各自设置一次（11.1）。
+   **② 它可以被一句 `--no-verify` 绕过**，无法强制（11.1 实测）。
+   所以"团队必须遵守的规范"（禁大文件、密钥扫描）应放在 CI 或服务端钩子，
+   见 11.2 的对照表；sourcepack 自己就是"不装钩子、闸门放 CI"（11.7）。
+
+3. **SSH 复用已有的 SSH key、不需要 gpg 与密钥环；GPG 的生态更久、老平台支持更全**。
+   配置差异：GPG 用 `user.signingkey=<keyid>`；SSH 要 `gpg.format=ssh` +
+   `user.signingkey=~/.ssh/id_ed25519.pub`（11.3 表）。两者验证都额外需要一份
+   "允许签名者"清单，SSH 侧是 `gpg.ssh.allowedSignersFile`（格式 `身份 <公钥>`，
+   如 `t@x.c ssh-ed25519 AAAA…`）。实测：缺这个文件时 git 仍报签名本身有效
+   （`Good "git" signature`），但无法把签名归到某个 principal
+   （`Unable to open allowed keys file`）。命令：`git verify-commit HEAD`、
+   `git tag -v <tag>`。
+
+4. **因为只有附注 tag 有地方放发布说明，也只有它能签名**。轻量 tag 只是一个指向
+   commit 的引用；`git tag -a -m "…"` 写的那段话存在独立的 tag 对象里
+   （`git cat-file -t` 返回 `tag`，见 11.3 实测），只有 `git for-each-ref` 的
+   `%(subject)` 与 `git show <tag>` 取得到，`git tag -l` 看不到它（11.6）。
+   签名同理——`git tag -a -s` 需要有一个对象可签。所以发布锚点必须是附注 tag：
+   本仓库 42 个 tag 里，12 个是附注对象、30 个是轻量 tag，第三列能显示说明的正是前者。
+
+5. **`{{ .Os }}` 是 Go 的 GOOS（Windows 上是 `windows`），Node 的 `os.platform()`
+   返回 `win32`，不映射就会拼出错误的归档名去 404**。`.goreleaser.yaml` 的
+   `name_template` 决定归档名（`sourcepack_<版本>_windows_amd64.zip`），而
+   `download-binary.js` 用 `os.platform()` 拼下载 URL，所以代码里必须显式映射
+   `win32 → windows`（`resolveTarget` 里 `const goos = isWindows ? 'windows' : platform`；
+   `os.arch()` 的 `x64` 与 GOARCH 的 `amd64` 也要过 `archMap`）。
+   v1.8.0 缺这层对齐，后果是 **Windows 用户完全装不上**（11.4/11.5 的事故一）。
+
+6. **三段：`gate` → `goreleaser` → `npm-publish`，用 `needs` 串联（11.4）**。
+   **① `gate`**：`go vet ./...` + `gofmt -l .` + `go test -race ./...` +
+   `node --test test/`，拦静态检查、格式化、并发与单元级问题——它的注释里直接
+   写着这个 job 就是为 v1.8.0 事故加的。
+   **② `goreleaser`**（`needs: gate`）：构建 3 OS × 2 架构共 6 个平台的归档并传
+   Release，拦"闸门没过就构建发布"，同时固定 `go-version: '1.24.x'` 保证产物可复现。
+   **③ `npm-publish`**（`needs: goreleaser`）：发 npm 后跑两段冒烟——1/2 用包里的
+   `download-binary.js` 拉真实 Release 资产（不依赖 registry 传播，拦归档名/落地名
+   不一致，正是 v1.8.0 的 Windows 问题）；2/2 轮询等传播后 `npm i -g` 再验一遍，
+   拦发布出去的 tarball 与 postinstall 问题。
+
+</details>
+
 ---
 
 ## 11.9 小结
@@ -414,7 +473,7 @@ git for-each-ref --sort=creatordate --format='%(refname:short) %(subject)' refs/
 - sourcepack 的发布链路：**推 tag → gate（vet/gofmt/race/node）→ goreleaser（6 平台归档）
   → npm publish → 两段冒烟**；每段都用 `needs` 串起来，权限按 job 最小化；
 - **发布用 tag 不用分支**：tag 不跟随历史改写（第 9 章实测），是稳定锚点；
-  **附注 tag 自带发布说明**（42 个 tag 的第三列就是它）；
+  **附注 tag 自带发布说明**（42 个 tag 里 12 个是附注对象，第三列显示的正是它们）；
 - **v1.8.0 事故的教训**：没有闸门、没有 Windows CI、没有安装冒烟，
   三个线上问题因此漏出——修复后同批加的 windows 矩阵当天就抓到两个真实平台 bug；
 - sourcepack **有意不装钩子**：钩子本地/可绕过/会污染用户仓库，

@@ -286,6 +286,60 @@ GIT_TRACE_PERFORMANCE=1 git rev-list --count --all 2>&1 | tail -2
 5. `sparse-checkout` 与 `partial clone` 分别省的是什么？
 6. sourcepack 的 `-g` 里，最大的固定开销是什么？为什么这是"刻意接受"的代价？
 
+<details>
+<summary>点开看答案</summary>
+
+1. **因为 `--depth=1` 禁止了 delta 深链，每次提交只能完整存一份文件内容。**
+   见 10.2：packfile 本应把相似对象串成 delta 链、只存"与基准对象的差异"，
+   `--depth=1` 把它关掉，"如果没有 delta"的代价就暴露出来。本章实测（3 万提交 /
+   9 万对象）：默认打包 **8,964,390 字节 → `--depth=1` 49,806,711 字节，即 5.6×**。
+   本机用同规模合成仓库复现：`--depth=1` 为 **49,791,699 字节**，`--depth=50` 为
+   7,400,102 字节（与书中 7,400,287 几乎一致）。`git verify-pack -v` 还能看到
+   chain length 直方图与 50 的深度上限，长链正是"改了很多次的小文件"。
+
+2. **因为 commit-graph 只预计算提交元数据，受益的是"纯遍历"；而 `git log -1`
+   的耗时几乎全是进程启动。** 见 10.3：commit-graph 存了父提交、提交时间、根树位置，
+   `rev-list` / `log --graph` 不必逐个解压 commit 对象；`git log --oneline` 还要取出
+   每条标题（瓶颈在对象读取），`git log -1` 只读一个提交，约 27ms 的固定启动开销就是
+   全部。本章实测：`rev-list --count --all` **110ms → 32ms（3.4×）**、`-graph` 112ms →
+   32ms，而 `log --oneline` 144→140ms、`log -1` 27→28ms（≈0）。本机同样复现方向：
+   `rev-list` 91ms → 12ms，`log -1` 始终 8ms；commit-graph 文件同为 1.7MB。
+
+3. **加速的是服务端 `pack-objects` 计算"客户端缺哪些对象"（可达性）这一步，
+   把逐对象遍历变成位运算。** 见 10.4：bitmap 预先把"某个提交可达的对象集合"编码成
+   位图（3 万提交 / 9 万对象 → 399KB），服务端在 clone/fetch 时就不必从提交一路走到
+   每个 tree/blob。小仓库测不出差异，是因为**这 9 万对象、本地克隆的瓶颈在进程与磁盘，
+   差异落在噪声里**：本章诚实记录的表格是 `rev-list --objects --all` 282ms vs 279ms、
+   file:// 克隆 962ms vs 1026ms。所以"机制存在"不等于"现在就该开"——它的收益要几十万
+   对象以上的仓库才显出来，**别在小仓库上做性能优化**。
+
+4. **因为本地路径克隆走的是硬链接优化、根本不经过传输协议，过滤器无从施加。**
+   见 10.6 的坑 1：必须把 URL 写成 `file://` 才会走真正的传输路径。实测
+   `git clone --bare --filter=blob:none /local/path` 给出
+   `warning: --filter is ignored in local clones; use file:// instead.`，对象数仍是
+   90000；换成 `file://` 但服务端没开 `uploadpack.allowFilter` 时，得到
+   `warning: filtering not recognized by server, ignoring`，**静默退化成完整克隆**
+   （实测同样是 90000）。两个条件都满足后，实测 in-pack **90000 → 60000**（去掉全部
+   blob）、体积 8.9M、`remote.origin.promisor=true`，与本章数字完全一致。
+
+5. **`--filter`/partial clone 省的是对象库（不下载 blob），`sparse-checkout` 省的是
+   工作区文件（只检出匹配的路径）。** 见 10.6 与 10.7：前者把首次克隆的对象数从 9 万
+   降到 6 万，但工作区仍是全量，blob 靠 promisor 机制按需拉取；后者不动对象库，只把
+   工作区限制到需要的目录或模式（`--cone` 按目录、`--no-cone` 按 gitignore 风格模式，
+   本章实测 200 个文件 → 111 个）。两者常配合用于大 monorepo：一个治"下载多大"，
+   一个治"磁盘上摊开多少"。
+
+6. **最大的固定开销是 git 进程启动本身：单次约 11ms，`-g` 大约要发起 10 次 git 调用，
+   于是约 110ms 花在 spawn 上。** 见 10.8 的账本：`rev-parse ×4`、`symbolic-ref`、
+   `log -1`、`diff --name-status ×2`、`ls-files --others`、`diff --patch`，而 `-g`
+   全流程（500 文件变更）约 210ms——**近一半时间不是扫描文件，而是启动进程**。
+   这是第 1 章"调 git CLI 换取行为一致性与可解释报错"的既定取舍：换成库内实现能省掉
+   这部分，但要承担语义偏差与行为不一致的风险。真正的瓶颈其实是**文件数**（2 万文件
+   3.85s vs 100 万行 5000 文件 190ms），而 commit-graph/bitmap/repack 这类仓库级优化
+   我们**不碰**——只读、不改（10.8 结论 3）。
+
+</details>
+
 ---
 
 ## 10.10 小结
@@ -302,7 +356,8 @@ GIT_TRACE_PERFORMANCE=1 git rev-list --count --all 2>&1 | tail -2
   但有**两个静默陷阱**：本地路径克隆会忽略过滤（要用 `file://`）、
   服务端要开 `uploadpack.allowFilter`；**sparse-checkout** 省的是工作区文件；
 - 诊断三件套：`GIT_TRACE_PERFORMANCE` / `git count-objects -v` / 多次取最快的计时；
-- **sourcepack 的性能账本**：`-g` 的约 90ms 花在 8 次 git 进程启动上（刻意的设计取舍），
+- **sourcepack 的性能账本**：`-g` 的约 110ms 花在约 10 次 git 进程启动上（10 × 11ms，
+  逐条清单见 10.8 的账本；这是刻意的设计取舍），
   真正瓶颈是**文件数**（2 万文件 3.85s vs 100 万行 5000 文件 190ms），
   而我们**不碰** repo 级的优化（commit-graph/bitmap/repack）——只读、不改。
 

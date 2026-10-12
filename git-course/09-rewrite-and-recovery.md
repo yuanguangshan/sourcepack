@@ -381,9 +381,63 @@ git reset --hard ORIG_HEAD && test -f o.txt && echo "救回来了"
 1. `reset --soft/--mixed/--hard` 分别动三棵树里的哪几棵？各自"改动去哪了"？
 2. `revert` 与 `cherry-pick` 都会产生新提交，它们的**新哈希**分别为什么与原来不同？
 3. `rebase` 之后为什么**所有**被重放提交的哈希都变了？
-4. `--amend` 之后 tag 会跟着动吗？为什么？（用 9.7 的实测回答）
+4. `--amend` 之后 tag 会跟着动吗？为什么？
+   （9.7 有 tag 的实测，但那里的实验是用 `reset --hard` 模拟改写的——把那条命令换成本题的 `--amend`，结论完全相同，想想为什么）
 5. 事故后第一、第二、第三层恢复手段分别是什么？哪一层会被下一次操作覆盖？
 6. sourcepack 为什么不参与任何改写？它记录的哈希在改写后会怎样？
+
+<details>
+<summary>点开看答案</summary>
+
+1. **`--soft` 只动 HEAD；`--mixed`（默认）动 HEAD + 索引；`--hard` 三棵全动。**
+   见 9.2 的对照表。实测（固定夹具 c1/c2，每次从 c2 干净态出发）：`--soft c1` 之后
+   索引与工作区里都还有 `g.txt`，`git status` 是 `M  f.txt` `A  g.txt`，即改动
+   **全留在暂存区**；`--mixed c1` 之后索引清空、工作区还在，status 变成
+   ` M f.txt` `?? g.txt`，即改动**退回工作区**；`--hard c1` 之后索引与工作区都没有了、
+   status 干净，即改动**直接消失**。三者的共同点是都只把引用往回挪，提交对象仍在
+   对象库里（实测 `git log --oneline -1 54fb056` 仍可读，且 `fsck --unreachable` 计数为 0，
+   因为 reflog 还引用着它）。
+
+2. **两者的新哈希都因"父提交不同"或"内容与提交时间不同"而必然改变，机制都是
+   "造新对象 + 移动引用"。** 见 9.3/9.4：`revert` 是在**当前尖端**追加一个内容相反的
+   新提交（实测 `d2caee3 Revert "c-b"`，而原提交 `889875e` 仍在历史里，历史只增长）；
+   `cherry-pick` 是把原提交的 diff 重新应用到**另一个父提交**上（实测在 `side` 上得到
+   `13ffeed`，与原提交 `84cea3d` 不同，`b.txt` 的内容回来了）。两者都不修改任何已有
+   对象——这正是"已经推送的历史可以安全 revert"的原因。
+
+3. **因为 commit 的哈希把 `parent` 字段也算了进去，基底一换就从被重放的那个提交
+   连锁到尾部，下游全变。** 见 9.6：`feat: 1` 的父提交从 `c1` 变成 `mainline` 的尖端，
+   它的哈希就变了；`feat: 2` 的 `parent` 跟着变，于是也变，一路传播。本章 reword 实验
+   是最直观的证明：只改第一条提交的信息，`49cfc8f`/`3b80547` 等一串哈希全部变成
+   `5e74cb3`/`2f606d0`/`b41185a`，而 `w.txt` 的内容一字未变（本机用同一实验复现：
+   `dc99044 4868692 befebb8` → `10419aa b1630b2 8cea341`，三个哈希全变、内容仍是 1 2 3）。
+   这正是 9.7 里"改写之后 tag、CI 缓存、别人的 clone 全都跟不上"的根源。
+
+4. **不会，tag 一动不动。** 见 9.7 的实测：`git tag -a my-release` 指向 `d349aec`
+   之后执行 `git reset --hard HEAD~1`，分支退到 `b0add57`，而
+   `my-release^{commit}` 仍然解析到 `d349aec`。本机复现同样结果：tag 始终是 `07424b2`，
+   回退后 HEAD 变成 `0b4a81c`。原因是 tag 是**独立引用**，直接指向一个固定的提交对象，
+   而 `--amend`/`rebase`/`reset` 移动的只是分支引用；要让 tag 跟上必须显式
+   `git tag -f`。也正因如此，发布锚点才应该用 tag（9.10.2）。
+
+5. **第一层 `ORIG_HEAD`（一枪救回）→ 第二层 `reflog`（完整引用移动史）→
+   第三层 `git fsck --lost-found`（最后的 dangling 对象）。会被下一次操作覆盖的是
+   第一层。** 见 9.8：`reset`/`merge`/`rebase` 之前的位置会写进 `ORIG_HEAD`，但它只在
+   "下一次操作之前"有效；reflog 记录每一次移动（`HEAD@{1}` 是合法 revspec，9.10.3 还能
+   直接喂给 `--rev`）；reflog 过期、引用全无时才用 `fsck` 找 dangling 对象再
+   `git branch rescue <sha>`。本机实测：`reset --hard HEAD~2` 搞丢提交 `37e739f`，
+   `ORIG_HEAD` 正是它，`git reset --hard ORIG_HEAD` 后提交与 `o.txt` 一起回来。
+   最好的办法仍是动手前先 `git branch backup`。
+
+6. **因为它只读：生产代码发出的 git 子命令只有 `diff`/`log`/`ls-files`/`rev-parse`/
+   `symbolic-ref` 五种，没有任何会改动仓库状态的调用。** 见 9.10.1 的 grep 实测
+   （`grep -c '"commit"\|"push"\|"reset"\|"rebase"' changeset.go` 结果为 0），所以它在
+   任何仓库里运行都没有副作用、不需要备份、也不需要权限。但 `-g`/`-G` 产物会写下 HEAD
+   的短哈希（`shortSHA` 取前 7 位），一旦你 amend/rebase，那个哈希在新历史里就找不到了
+   （9.10.2）——这不是 bug，而是"哈希是内容的函数"的直接后果。实用推论：要长期引用某次
+   审查就**打 tag**（tag 不跟随改写，9.7 已实测），或只在已经冻结的提交上生成产物。
+
+</details>
 
 ---
 

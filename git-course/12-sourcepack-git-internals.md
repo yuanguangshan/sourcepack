@@ -9,9 +9,18 @@
 
 ## 12.1 全景：我们与 Git 的接口只有一层
 
-整个项目对 Git 的依赖被收在一层薄封装 `gitRunner` 里——结构体本身只有 4 个字段
-（`changeset.go` 的 `type gitRunner struct`，本版 157 行起），
-方法集中在 `command()` 一处，前后不过几十行：
+整个项目对 Git 的依赖被收在一层薄封装 `gitRunner` 里——结构体本身只有 **2 个字段**
+（`changeset.go` 的 `type gitRunner struct`，本版 157 行起）：
+
+```go
+type gitRunner struct {
+	dir      string
+	pathspec string // 仓库根相对路径，"" 表示整个仓库
+}
+```
+
+真正做事的不是这个结构体，而是挂在它上面的几个方法，且**所有 git 调用都必须经过
+`command()`**——hardening 只写在这一处：
 
 ```
    ┌──────────────────────────────────────────────┐
@@ -350,7 +359,7 @@ Git 已经负责的部分（对象、引用、合并、忽略、传输），我�
 ## 12.11 自测题（综合）
 
 1. 一个用户报告"我的中文文件名在快照里变成了乱码"，你会先查哪一层的哪个参数？
-   （提示：第 12.2 与 12.5）
+   （提示：第 12.2 与 12.4）
 2. 产物里出现了两条一模一样的路径，其中一条是 `c/b/x.go`。可能是什么原因？
    （提示：第 6 章 mnemonicPrefix + 双剥前缀）
 3. 用户说"我用 `-g --rev main` 审查我的分支，结果多出一个删除"。怎么解释、怎么建议？
@@ -359,6 +368,72 @@ Git 已经负责的部分（对象、引用、合并、忽略、传输），我�
 5. 如果要把 sourcepack 改成"同时支持 SVN 仓库"，`gitRunner` 这一层给你什么好处、
    又会有什么代价？（开放题）
 6. 从 12.9 的 12 条里挑三条，说明它们各自对应前 11 章的哪个坑。
+
+<details>
+<summary>点开看答案</summary>
+
+1. **先查 `gitRunner.command()` 里注入的 `-c core.quotepath=false` 这一层**
+   （12.2 表里"没有它会路径解析全错"的那一行）。实测未设置时
+   `git diff --name-status` 输出 `"\344\270\255\346\226\207 …"` 八进制转义，
+   加上这个参数后是原样 UTF-8。`-c` 优先于用户的 `core.quotepath`，所以日志里
+   出现 `\3xx` 基本等于某条 git 调用绕过了 `command()`（12.1）。
+   然后是第二层：`parseDiffPath`/`unquoteGitPath` 对引号路径的还原（12.4）——
+   中文在 `quotepath=false` 下不会被加引号，与 `--src-prefix/--dst-prefix`
+   造成的路径问题（12.5）是两件事，别混。
+
+2. **这是"前缀没固定 + 路径剥了两层"产生的幽灵条目**：`c/b/x.go` 里的 `c/` 是
+   `diff.mnemonicPrefix` 的 commit 前缀，`b/` 是仓库里真实存在的目录名。实测仓库里
+   有 `b/x.go` 且用户开了 `diff.mnemonicPrefix=true` 时，`git diff HEAD` 的头部正是
+   `--- c/b/x.go`；解析器若把 `c/`、`b/` 都当 git 前缀剥掉就得到 `x.go`，与
+   `--name-status -z` 给出的 `b/x.go` 对不上，于是同一条路径出现两次。
+   修法两条一起上：`command()` 显式传 `--src-prefix=a/ --dst-prefix=b/` 固定协议
+   （12.5），`parseDiffPath` 只剥一层、且只剥与本行匹配的那个 `a/` 或 `b/`
+   （12.4、12.9 第 6 条）。这就是 v1.8.1 的假变更 `c/b/gone.go`，v1.8.2 修掉。
+
+3. **`--rev` 是双点语义（直接和 main 尖端比），会把"main 有、你分支没有"的提交
+   反向算成删除；改用本仓库已有的 `--base main`（三点语义）就对了**。
+   `changeset.go` 的 `collectWorkingTree` 在 `--base` 分支先
+   `g.run("merge-base", config.GitBase, "HEAD")` 再 diff 共同祖先；`main.go` 里
+   `--base` 与 `--rev` 互斥，`-h` 也写明 `--rev` 是"双点：直接比尖端"。
+   沙箱实测（main 加了 `mainonly.txt`、feature 加了 `feat.txt`，当前在 feature）：
+   `-g --rev main` 报 2 条、含 `mainonly.txt deleted (+0 −1)`；
+   `-g --base main` 只有 `feat.txt added`——多出来的那个删除就是它。
+   建议：审 PR/分支统一用 `-g --base main`（等价 `git diff main...HEAD`）；
+   `--rev` 留给"确实要和某个具体提交直接比"。
+
+4. **因为作者名、提交信息、`%P` 里什么都可能出现（含空格、逗号、`|`），用它们
+   切分必然在真实数据上崩**。`logFieldSep = "\x1f"` 是 ASCII Unit Separator，
+   不可打印、实际提交信息里不会出现，所以 `strings.Split(line, logFieldSep)`
+   是安全的（常量定义在 `changeset.go` 顶部，`collectHistory` 里拼 `--format`
+   再切）。这与"清单一律用 `-z`"是同一条原则（12.3）：只用数据里不可能出现的
+   分隔符——要么 NUL，要么 0x1F，要么写真正的解析器，绝不用空格/逗号/`|`。
+
+5. **好处是"只有一层要换"**：生产代码里唯一的 `exec.Command("git", …)` 就在
+   `gitRunner.command()`（`changeset.go`），`run`/`runLimited`/`scoped` 是全部调用面，
+   新增后端只要实现同一组方法，`collectChangeSet` 等十几处调用方不用动；12.2 那串
+   hardening（禁分页/禁交互/`-z`/体积上限/错误包装）也会自动继承。
+   **代价是这层很薄，git 的语义已经漏到调用方**：① 参数是 git 方言——
+   `rev-parse --verify <base>^{commit}`、`merge-base`、`--name-status -z -M`、
+   `--src-prefix/--dst-prefix`、`--no-textconv` 都要找 SVN 对应物，而 SVN 没有索引、
+   没有三点 merge-base、没有 rename 检测；② 返回值是裸字符串，
+   `parseNameStatusZ`/`parseDiffPath`/`logFieldSep` 直接按 git 的输出格式解析，
+   SVN 的 `svn status`/`svn diff` 是另一套（没有 `-z`，路径转义规则也不同），
+   解析器要并列实现；③ `run` 的错误文案写死 `git … failed`，只读承诺针对的是 git 的
+   索引与对象库，SVN 工作副本（`.svn`）语义不同。结论：它降低"加固漏掉"的风险，
+   但不是后端无关的抽象——真要支持 SVN，得再抽一层**命令语义**
+   （如 `changedFiles(base)`），而不是复用参数。
+
+6. **第 3 条 `-c core.quotepath=false` ← 第 2/6 章**：不加它，中文文件名变
+   `\344\275\240` 八进制转义，路径解析全错（12.2 表实测）。
+   **第 5 条 固定协议、不猜配置（`--src-prefix/--dst-prefix`、`--no-textconv`、
+   `--no-ext-diff`）← 第 6 章**：用户的 `diff.mnemonicPrefix` 造出假变更
+   `c/b/gone.go`（v1.8.1 事故、v1.8.2 修）；用户的 textconv 失败会让 `git diff`
+   退出码 128 而用户还以为没事（12.5 表）。
+   **第 9 条 给子进程输出设上限、截断后排干管道 ← 第 6/10 章**：单行 20MB 的病态
+   diff 会吃穿内存（`runLimited`）；不排干管道，git 会阻塞在写端导致 `Wait` 挂死
+   （12.2 的 `io.Copy(io.Discard, stdout)`）。
+
+</details>
 
 ---
 

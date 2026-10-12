@@ -431,6 +431,45 @@ gx -g --dry-run -d . | grep -E "staged|Files changed"
 4. `git status` 为什么不必读完所有文件内容就能判断谁变了？
 5. sourcepack 的 `--staged` 模式为什么可以"直接标记 Staged=true"，而不必再跑 diff？
 
+<details>
+<summary>点开看答案</summary>
+
+1. **staged = "索引里的内容与 HEAD 不同"，而不是"我运行过 `add`"。** 见 4.1 的
+   三棵树图：`git diff --cached` 比对 HEAD ↔ 索引，有差异才叫 staged；`git diff`
+   比对索引 ↔ 工作区，有差异才叫 unstaged。由此可推：若 `add` 进去的内容与 HEAD
+   相同（文件本来就没改），索引与 HEAD 相等，`git status` 什么都不会显示。
+
+2. **提交的是索引里那一版，也就是你 `add` 那一刻的内容。** `git commit` 只把
+   **索引**写成 tree，工作区里之后改的东西完全不进这次提交（4.6）。所以
+   `add` → 再改工作区 → `commit` 之后，提交里是第一次 add 的版本，而
+   `git status --porcelain` 显示 ` M`（工作区与索引仍不同）——那部分改动要等下一次
+   `add` + `commit` 才进历史。`MM`（两份内容并存）与 `git add -p` 的部分提交，
+   都是这条规则的直接应用。
+
+3. **因为冲突时索引是"合并工作台"，同一路径要同时保住三方版本**（4.7）。平时一个
+   路径只有 stage 0 一条；冲突时出现三条：stage 1 = 共同祖先（merge base）、
+   stage 2 = ours（当前分支）、stage 3 = theirs（被合并进来的）。4.7 实测的三条
+   哈希（`df967b96…` / `b19a1e93…` / `950b81b7…`）我在 /tmp 沙箱用同样内容复现，
+   逐字相同。工作区的 `<<<<<<<` 标记只是给人看的提示，真正的三方数据在索引里；
+   解决冲突 = 一次 `git add` 把三条归一回 stage 0（实得 `2ab19ae6…`）。
+
+4. **因为索引缓存了每个文件的 stat 信息，可以先用它做廉价筛选**（4.2）。
+   `.git/index` 的每个条目含 `ctime / mtime / dev / ino / uid / gid / size` +
+   mode + blob 哈希 + 路径；`git status` 先比 stat，只有对不上的才去读内容算哈希。
+   这就是上万个文件的项目里 `git status` 依然飞快的原因（代价是 racy timestamp
+   那类坑，留到第 10 章）。
+
+5. **因为 `--staged` 的清单本身就来自 `git diff --cached`，"来源即证据"**
+   （4.9.1、4.9.3）。清单里每一条必然满足"索引与 HEAD 不同"，所以不必再跑一次
+   diff 去确认；v1.8.0 恒为 0 的根因正是清单来源与两个集合的填充被
+   `if !config.GitStaged && !cs.Unborn` 割裂，导致 `summarizeChangeSet` 的 switch
+   四个分支全落空。收益是省掉一次冗余 diff、语义上也不可能标错；**代价**是这个
+   显式标记隐含依赖"清单只有这一个来源"的前提——将来若 `--staged` 与普通模式共用
+   清单来源，这句赋值必须重新审视（同时 `--staged` 时 untracked 本应为 0，因为
+   未跟踪文件不可能被暂存）。
+
+</details>
+
 ---
 
 ## 4.11 小结

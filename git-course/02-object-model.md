@@ -265,11 +265,27 @@ R099	gen-docs.go	gdox.go
 **这三次改名都没有产生新的 blob**——文件内容几乎没变，变的只是 tree 条目里的名字。
 `99%` / `98%` 的相似度说明那两次改名夹带了极小的调整。
 
-> 这解释了为什么 `git diff` 默认**不显示重命名**：它必须对比两个 blob，
-> 发现内容相似度超过阈值（默认 50%）才判定为 rename。sourcepack 的
-> `git mv`/rename 支持靠的正是 `-M` 参数（见 `changeset.go` 里
-> `diffCommon` 那一组参数，本版在 353 行附近）：
+> 重命名检测**默认就是开着的**——`diff.renames` 自 Git 2.9 起默认为 `true`，
+> 所以 `git diff --name-status` 会直接给出 `R100` 这样的行。（它必须对比两个 blob，
+> 相似度超过阈值、默认 50% 才判定为 rename。）
+>
+> 但 sourcepack 仍然**显式**传 `-M`（见 `changeset.go` 里 `diffCommon` 那一组参数，
+> 本版在 353 行附近）：
 > `diff --no-ext-diff --no-textconv --no-color -M --src-prefix=a/ --dst-prefix=b/`。
+> 理由与第 6 章讲前缀时是同一条——**别让产物取决于用户的配置**。实测三种情形：
+>
+> ```bash
+> $ git diff --name-status --cached
+> R100	old.txt	new.txt
+> $ git -c diff.renames=false diff --name-status --cached     # 用户改了自己的配置
+> A	new.txt
+> D	old.txt
+> $ git -c diff.renames=false diff --name-status -M --cached  # 显式 -M 压过配置
+> R100	old.txt	new.txt
+> ```
+>
+> 也就是说：**默认值会变、用户能改，但显式传参不会。** 一个"读 Git"的工具若依赖默认值，
+> 输出就会随环境漂移，而这类漂移极难排查。
 
 ### 后果二：内容相同的两个文件只存一份
 
@@ -364,6 +380,31 @@ git log --oneline --name-status -M --follow -- main.go | grep '^R'
 1. 如果两个文件内容完全相同、文件名不同，`git add` 之后 `.git/objects` 里有几个对象？
 2. `git commit` 之后索引变了吗？HEAD 变了吗？如果此时 `git status`，三个区域谁和谁比对？
 3. 手工造的 commit 有什么办法让它出现在 `git log` 里？（提示：第 3 章，给它一个引用）
+
+<details>
+<summary>点开看答案</summary>
+
+1. **只有 1 个新对象——一个 blob。** blob 里不含文件名（2.1 的"关键设计"），
+   两份内容相同 → 同一个哈希 → 对象库只存一份（2.8 后果二）。实测：空仓库里对
+   两个内容相同、文件名不同的文件执行 `git add`，`.git/objects` 下只多出 1 个
+   松散对象，两个文件的 `git hash-object` 也给出同一个哈希。文件名要到 `commit`
+   写 tree 时才出现，而且只是 tree 条目里的一行（见 2.5 的模式表）。
+
+2. **索引条目的内容不变，变的是 HEAD。** `git commit` 只把**索引**（候选快照）
+   写成 tree、再把 HEAD 移到新提交，索引里"路径 → blob 哈希"的映射不动——实测一次
+   不触碰索引的 `--allow-empty` 提交前后，`.git/index` 的校验和完全一致。提交后
+   `git status` 比的是三方的哈希（2.8 末尾预告，图见 4.1）：`git diff --cached`
+   看 HEAD ↔ 索引（staged），`git diff` 看索引 ↔ 工作区（unstaged），工作区有而索引
+   里没有的是 `??`。此刻"HEAD ↔ 索引"已归零，若工作区没再改，`--porcelain` 输出为空。
+
+3. **给它一个引用。** `git log` 不是"列出对象库里所有提交"，而是从引用出发顺着
+   `parent` 边回溯，不可达的提交不会出现（3.6）。所以
+   `git update-ref refs/heads/handmade <sha>`（等价 `git branch handmade <sha>`）
+   就能让它进历史：第 3.6 节实测 `git log --all | grep -c b42db3a` 加引用前是 0、
+   加引用后是 1。只想临时看内容，直接 `git show <sha>` 也行——但那是按哈希读对象，
+   不等于"进入历史"。
+
+</details>
 
 ---
 

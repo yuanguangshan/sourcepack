@@ -93,8 +93,19 @@ $ git check-ignore -q app.log ; echo $?
 0                  # ← 0 = 被忽略
 ```
 
-> **踩坑提示**：一次传多个路径时，**只要有任意一个不被忽略，整条命令就退出 1
-> 且不打印任何内容**。排查时请一次只查一个，或用 `git check-ignore -v --stdin`。
+> **踩坑提示**：退出码只在**用 `-q` 查单个路径**时才可靠，
+> 而且 `-q` **只接受一个路径**——传多个会直接报错（实测）：
+>
+> ```bash
+> $ git check-ignore -q a.log keep.log          # -q 配多路径：不是"退出 1"，是直接失败
+> fatal: --quiet is only valid with a single pathname
+> $ echo $?
+> 128
+> ```
+>
+> 不带 `-q` 时它**只打印被忽略的路径**（未忽略的静默跳过），退出码为 **0**；
+> 所以"多路径 + 看退出码"这个组合本身不成立。要批量判定，把路径用
+> `git check-ignore --stdin -v` 逐行喂进去，或者干脆一次查一个。
 
 **其它排查命令**：
 
@@ -407,6 +418,53 @@ git ls-files --others --exclude-standard
 5. 为什么 sourcepack 不干脆让 git 来决定一切忽略（而要实现 `.gdignore` 匹配器）？
 6. `filepath.Match` 与 `path.Match` 在 Windows 上的差别会导致什么后果？
 
+<details>
+<summary>点开看答案</summary>
+
+1. **因为忽略规则只作用于未跟踪文件**——它决定的是哪些文件不进 `git status` / `git add .` 的候选；
+   一旦文件已进索引，规则对它**完全无效**。7.4 实测：`git add -f app.log` 提交后
+   `git check-ignore -q app.log` 退出 1（不忽略），`git status --porcelain` 照常显示 ` M app.log`。
+   要"脱离版本控制但保留工作区文件"，用 **`git rm --cached app.log`**（只删索引条目，磁盘文件不动）——
+   实测之后 `check-ignore -q` 立刻回到退出 0（又被忽略）。
+   补充：`.gitignore` 必须提交推送才对同事生效，纯本地噪音请放 `.git/info/exclude`。
+
+2. **`abc/**` 匹配 `abc` 内部的内容（至少一层），不含 `abc` 自身；`**/abc` 的 `**` 允许零层，匹配任意层级（含仓库根）下叫 `abc` 的文件或目录。**
+   7.6.1 实测 `abc/**`：`abc` 保留、`abc/f.txt` 与 `abc/d/deep.txt` 忽略、`abcd` 保留；
+   我另外实测 `**/abc` 会把 `abc`、`x/abc`、`x/y/abc` 全部忽略（`abc` 作为目录被忽略后，其下 `abc/f.txt` 也一并忽略）。
+   原因是 git 对 `abc/**` 的定义是"`abc` 内部"，零层的 `**` 在这里不被允许——sourcepack 的修法是
+   给末尾 `**` 补一个 `*` 段（`ignore.go:275-279`）。
+
+3. **两种情况下 `!` 不起作用**：① **父目录已被排除**：git 遍历到被忽略的目录就不再往里走，
+   里面的文件根本没被"看见"，自然救不回来（7.6.2 实测 `a/**/b` + `!a/b/c`：`a/b/c` 仍退出 0，
+   `git check-ignore -v --no-index a/b/c` 归咎于 `a/**/b`）；② **同一文件内后面还有一条命中的规则**：
+   语义是"最后一条命中的规则生效"，`!` 写在前面就白写（7.5 实测 `sub/.gitignore` 里 `!keep.log` 在第 1 行、
+   `*.log` 在第 2 行，`sub/keep.log` 最终被忽略）。对照：模式命中**文件**而不是目录时 `!` 有效
+   （`*.tmp` + `!keep.tmp` → 保留）。
+
+4. **被保留了——`!` 的含义是"不要忽略"，而 `-v` 打印的是"命中的规则"，不是判定结果。**
+   7.3 的格式是 `来源文件:行号:模式<TAB>路径`，这行说明命中的是 `.gitignore` 第 4 行的负向规则 `!keep.log`。
+   **真正判断是否被忽略要看退出码，而且要用 `-q` 单路径**：实测 `git check-ignore -q keep.log` 退出 1（保留）、
+   `git check-ignore -q app.log` 退出 0（忽略）。两个坑要记住：`-v` 单独使用时负向命中也会退出 0
+   （不能只看 `-v` 的退出码）；`-q` 一次只能给一个路径，传多个会直接
+   `fatal: --quiet is only valid with a single pathname`（退出 128），所以排查时请一次查一个或配 `--stdin`。
+
+5. **因为 git 只管 git 的忽略规则，而 sourcepack 有三件事必须自己扛（7.9）**：① `.gdignore` 是工具自己的机制，
+   git 完全不认识它，而"不改项目 `.gitignore` 也能让快照跳过某些文件"是产品特性；②**全量扫描要在不是 git 仓库的
+   目录里工作**（`gx -d /tmp/foo` 很常见），那里根本没有 `check-ignore` 可用；③即使在 git 模式（清单由 git 给），
+   `.gdignore` 仍要叠加在 git 的结论之上，且我们规定"`.gdignore` 永远压过 `.gitignore`"。
+   代价是要自己承担语义对齐的风险——`abc/**` 不含自身、父目录被排除后 `!` 无效都是踩过的坑，
+   所以配了 14 模式 × 40 路径的 `git check-ignore` 对照测试来兜底。
+
+6. **后果是 `*` 会跨过 `/`，造成过度排除。**
+   `filepath.Match` 里 `*` 的定义是"匹配任意多个 **Separator** 字符"，而 `Separator` 是平台常量：
+   Unix/macOS 上是 `/`，Windows 上是 `\`（我核对了 Go 1.24 的 `path/filepath/match.go`；`path.Match` 则写死"非 `/`"）。
+   于是 `src/*.go` 在 Windows 上会匹配 `src/sub/main.go`——7.8.1 的 CI 原文就是
+   `matchPattern("src/sub/main.go", "src/*.go") = true, want false`，三个 windows job 同时挂。
+   修法是改用 `path.Match`（`ignore.go:357`），并把 `windows-latest` 加进 CI 矩阵；
+   这类"只在某个平台成立"的差异，没有对应平台的 CI 就永远发现不了。
+
+</details>
+
 ---
 
 ## 7.11 小结
@@ -417,7 +475,8 @@ git ls-files --others --exclude-standard
 - **`.gitignore` 只管未跟踪文件**：已跟踪文件照常修改与提交（`check-ignore` 对已跟踪文件退出 1，
   `git rm --cached` 后变 0）；
 - `git check-ignore -v` 给出`来源文件:行号:模式`，是排查的第一工具；
-  但它**混入未忽略路径时会整体退出 1 且不打印**；
+  但它**不带 `-q` 时退出码恒为 0**，只是把未忽略的路径静默跳过——
+  想用退出码判定必须 `-q` 且**一次只查一个**（多路径会 `fatal`，退出 128）；
 - 两条反直觉规则：**`abc/**` 不含自身**（sourcepack 补一个 `*` 段）、
   **父目录被排除后 `!` 无效**（遍历靠 `SkipDir`、git 模式靠显式回溯祖先）；
 - 跨平台坑：`filepath.Match` 在 Windows 让 `*` 跨过 `/`（我们改用 `path.Match`，

@@ -86,10 +86,9 @@ $ git -C origin.git branch
 
 ```bash
 $ git branch -a           # fetch 前
-（空 —— bob 刚克隆完空仓库时）
+（空 —— bob 刚克隆完空仓库时，本地连 main 都还不存在）
 $ git fetch origin
 $ git branch -a
-* main
   remotes/origin/main
 $ git rev-parse --short refs/remotes/origin/main
 6c71e63
@@ -99,6 +98,10 @@ $ head -c 40 .git/FETCH_HEAD
 
 三件事：① 下载缺的对象；② 更新 `refs/remotes/origin/main`；③ 写 `FETCH_HEAD`
 （记录"这次抓到了什么"，`git merge FETCH_HEAD` / `git pull` 会用到）。
+
+注意上面 `git branch -a` 的输出里**没有 `* main`**：bob 的本地 `main` 此刻还是
+"未诞生"状态（unborn，见第 3 章），`fetch` 也不会替他创建它——`fetch` 只写
+`refs/remotes/` 下的远程跟踪引用。这恰好是下面那句话的最好证据。
 
 **没有动的**：你的 `main`、你的工作区、你的索引。**所以 `fetch` 永远是安全的**。
 
@@ -329,6 +332,50 @@ GIT_TRACE_PACKET=1 git push origin HEAD 2>&1 | grep -E "want|have" | head -5
 4. `--force-with-lease` 保护的是谁？（用 8.6 的实验回答）
 5. 一次 `fetch` 传输的对象数量取决于什么？
 6. sourcepack 的 `-p` 与 `git push` 有什么本质区别？为什么我们的工具不需要 remote 权限？
+
+<details>
+<summary>点开看答案</summary>
+
+1. **`+` 表示"允许非快进更新"这个 refspec 的目标引用**（见 8.3 的拆解表）。
+   fetch 时远端可能被 force push 过，本地的 `refs/remotes/origin/*` 必须能"倒退"；
+   没有 `+`，Git 会拒绝更新已存在的远端跟踪引用，fetch 就搬不动被改写过的远端分支。
+   实测 `git config remote.origin.fetch` 输出确认默认就是带 `+` 的形式。
+
+2. **不会。** 见 8.4：`fetch` 只做三件事——下载缺的对象、更新
+   `refs/remotes/origin/*`、写 `.git/FETCH_HEAD`；本地分支、索引、工作区一个都不动，
+   所以 `fetch` 永远是安全的。实测在空克隆的 b 里 `git fetch origin` 后
+   `git branch -a` 只多出 `remotes/origin/main`，工作区仍然为空、本地 `main` 停在原处。
+   要把远端的进展"应用"进来，必须再 merge / rebase / pull。
+
+3. **因为允许非快进，远端那个别人可能已经基于它工作的提交会被无声丢掉。**
+   见 8.5：`push` 移动的是远端的 `refs/heads/*`，非快进意味着新历史不包含旧尖端，
+   Git 把这个"改变别人可见历史"的危险动作默认挡下。实测 `--amend` 后再推得到
+   `! [rejected] ... (non-fast-forward)`、退出码 1；正当出路是 `pull --rebase`、
+   对自己的分支用 `--force-with-lease`，只有明确知晓后果时才 `--force`。
+
+4. **保护的是协作者——也就是"你尚未看见的别人的提交"。** 见 8.6 的对照实验：
+   它的语义是"只有当远端仍是我上次看到的样子，才允许我覆盖"。实测 b 在 a 强推之后
+   （b 记录的远端已过期，远端前进到 `456b87b`）想强推，得到
+   `! [rejected] ... (stale info)`、退出码 1；同一时刻换成 `--force` 则退出码 0，
+   且远端 `grep -c` 确认 A 的提交被彻底丢掉（0 条）——**`--force` 会静默毁掉别人的工作，
+   `--force-with-lease` 用一句 `stale info` 拦住你。**
+
+5. **取决于"本地缺多少对象"，而不是仓库总量。** 见 8.7：客户端先 `want` 报出要的
+   目标提交，再甩一串 `have` 列出自己已有的，服务端据此算出最小 packfile。
+   实测 `GIT_TRACE_PACKET=1 git fetch` 能看到 `fetch> want <sha>` 后跟一长串
+   `fetch> have <sha>`；每次只推入 1 个提交（1 blob + 1 tree + 1 commit）时，
+   远端对象数依次为 3 → 6 → 9 → 12，**严格每次 +3**（本章正文的量化为 697 → 700 → 703）。
+   这就是几千个提交的仓库也能"秒级 fetch"的原因：传输量正比于新增对象。
+
+6. **本质区别：`-p` 发的是生成的 Markdown 产物，`git push` 搬的是 git 对象。**
+   见 8.10 的对照表与实测：`-p` 走 `multipart/form-data` POST 到任意 HTTP 端点、
+   用 `X-Auth-Key` 认证，副作用只是"对方收到一份文本"；`git push` 走
+   pkt-line/packfile 协议、用 SSH key 或 token 认证，副作用是移动远端分支引用。
+   sourcepack 的生产路径只读本地对象库、从不做网络 git 操作（9.10.1 实测其子命令
+   只有 `diff`/`log`/`ls-files`/`rev-parse`/`symbolic-ref`），所以它在没有任何 remote
+   的仓库里也能工作，自然**不需要任何 remote 权限**。
+
+</details>
 
 ---
 
