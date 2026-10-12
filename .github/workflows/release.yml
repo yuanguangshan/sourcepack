@@ -77,21 +77,41 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      # 端到端冒烟：把刚发布的包装回来，验证 postinstall 能从 Releases 下载到
-      # 二进制、且二进制能跑。v1.8.0 的三个线上问题（Windows 装不上、
-      # --staged 计数为 0、-h 丢说明）单测都覆盖不到，但这一步能拦住其中两个。
-      # 注意顺序：先 publish 再冒烟，所以冒烟失败不会让已发布的包消失，
-      # 只是把问题暴露成一次红色构建。
-      - name: 装回来跑一遍（postinstall + 二进制）
+      # 端到端冒烟，分两段：
+      #   1/2 直接用包里的 download-binary.js 拉真实 Release 资产——这一步不依赖
+      #       npm registry 传播，确定性最高，正好覆盖 v1.8.0 那种"归档名/落地名
+      #       不一致导致装完即挂"的问题；
+      #   2/2 从 npm 装回来——这一步才验证发布出去的 tarball，但 registry 传播
+      #       可能要几分钟（v1.8.2 首次跑时 90 秒内一直 ETARGET），所以先轮询。
+      #       只把"5 分钟后仍看不到版本"当失败：那是真问题，不是传播延迟。
+      - name: 冒烟 1/2：下载真实 Release 资产（不依赖 npm 传播）
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          mkdir -p /tmp/sp-smoke && cp index.js download-binary.js package.json /tmp/sp-smoke/
+          cd /tmp/sp-smoke
+          node -e "const fs=require('fs');const p=require('./package.json');p.version='$VERSION';fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+          node download-binary.js
+          NAME=$(node -e "console.log(require('./download-binary.js').binaryNameFor(process.platform, process.arch))")
+          test -x "./$NAME"
+          ./"$NAME" --version | grep -q "$VERSION"
+          ./"$NAME" -h | grep -q "Convenience shortcuts:"
+          echo "✓ 下载 / 解压 / 落地名 / 可执行 / 用法说明 全部通过"
+
+      - name: 冒烟 2/2：从 npm 装回来（先等 registry 传播）
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           VERSION=${GITHUB_REF_NAME#v}
-          for i in 1 2 3 4 5 6; do
-            npm install -g "sourcepack@$VERSION" && break
-            echo "registry 还在传播，${i}/6 重试..."
-            sleep 15
+          ok=no
+          for i in $(seq 1 20); do
+            if npm view "sourcepack@$VERSION" version >/dev/null 2>&1; then ok=yes; break; fi
+            echo "等 registry 传播 ${i}/20..."; sleep 15
           done
+          if [ "$ok" != yes ]; then
+            echo "::error::npm 上 5 分钟内仍看不到 $VERSION（不是传播延迟，需要人工确认）"
+            exit 1
+          fi
+          npm install -g "sourcepack@$VERSION"
           sourcepack --version | grep -q "$VERSION"
           sourcepack -h | grep -q "Convenience shortcuts:"
-          echo "✓ 冒烟通过" 
+          echo "✓ npm 安装路径通过"
