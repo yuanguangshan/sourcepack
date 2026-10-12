@@ -19,3 +19,4 @@ book/dist/
 book/.backup/
 __pycache__/
 *.pyc
+git-diagnostics-*.zip
