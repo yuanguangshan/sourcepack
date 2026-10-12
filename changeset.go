@@ -334,7 +334,11 @@ func collectWorkingTree(g *gitRunner, config *Config, cs *ChangeSet) error {
 		cs.Spec = "git diff " + base + scope + "  (working tree + index vs " + base + ")"
 	}
 
-	diffCommon := []string{"diff", "--no-ext-diff", "--no-textconv", "--no-color", "-M"}
+	// --src-prefix/--dst-prefix 显式固定为 a/ b/：用户配置里的
+	// diff.mnemonicPrefix（i/ w/ c/ o/）或 diff.noprefix 会改变 diff 头部，
+	// 让 parseDiffPath 还原不出路径，进而贴不上 diff、多出幽灵变更。
+	diffCommon := []string{"diff", "--no-ext-diff", "--no-textconv", "--no-color", "-M",
+		"--src-prefix=a/", "--dst-prefix=b/"}
 	if config.GitStaged {
 		diffCommon = append(diffCommon, "--cached")
 	}
@@ -504,7 +508,8 @@ func collectHistory(g *gitRunner, config *Config, cs *ChangeSet) error {
 			return perr
 		}
 
-		patchArgs := append([]string{"diff", "--no-ext-diff", "--no-textconv", "--no-color", "-M", base, grp.SHA}, g.scoped()...)
+		patchArgs := append([]string{"diff", "--no-ext-diff", "--no-textconv", "--no-color", "-M",
+			"--src-prefix=a/", "--dst-prefix=b/", base, grp.SHA}, g.scoped()...)
 		patch, clipped, derr := g.runLimited(maxPatchBytes, patchArgs...)
 		if derr != nil {
 			return derr
@@ -811,8 +816,14 @@ func parseDiffPath(s string) string {
 		return ""
 	}
 	p = unquoteGitPath(p)
-	p = strings.TrimPrefix(p, "a/")
-	p = strings.TrimPrefix(p, "b/")
+	// 只剥与本行匹配的那一个前缀。原来连着剥 "a/" 再剥 "b/" 是错的：
+	// 仓库里真实存在 b/ 目录时，--- a/b/x.go 会被剥成 x.go（应为 b/x.go），
+	// 于是 diff 贴不到对应的变更上，还会多出一条"幽灵变更"。
+	if strings.HasPrefix(p, "a/") {
+		p = p[2:]
+	} else if strings.HasPrefix(p, "b/") {
+		p = p[2:]
+	}
 	return p
 }
 

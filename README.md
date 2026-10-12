@@ -607,3 +607,112 @@ Markdown"这个真实目的。
 
 单文件时代的历史包袱。构建入口早已是 `go build .`，所以这次只是
 `git mv`，同步更新了 `install.sh`、代码注释与 README 里的引用。
+
+---
+
+## 修复记录（2026-10-12 · v1.8.2）
+
+### 1. 跨 32KB 块边界的中文文件被误判成二进制（P0，v1.8.1 线上）
+
+`scanFileStats` 里这一行取的是上一块**开头**的字节，`carry` 里的半截字符
+从未被拼回缓冲区：
+
+```go
+scan = append(scan[:carryLen], chunk...)   // ✗ carry 没用上
+scan = append(scan[:0], carry[:carryLen]...) // ✓ 先把 carry 拼回去
+scan = append(scan, chunk...)
+```
+
+于是块边界上的汉字被当成非法 UTF-8，整个文件被判 Binary file 并静默丢弃：
+
+| 文件 | 大小 | v1.8.1 | v1.8.2 |
+|---|---:|---|---|
+| 中文注释 + ASCII 代码 | 183 KB | ❌ Binary file | ✅ |
+| 中文正文 + ASCII | 156 KB | ❌ Binary file | ✅ |
+| 纯汉字 | 120 KB | ✅ | ✅ |
+| 纯 ASCII | 95 KB | ✅ | ✅ |
+
+纯汉字之所以幸存，是因为文件开头恰好是 `E4 B8`（一个汉字的 lead+continuation），
+拼上第二块首字节正好凑成一个"合法"字符——纯属巧合，混入 ASCII 就必现。
+
+**比修 bug 更重要的是补上系统性防线**：`scanFileStatsChunk(path, probe, chunkSize)`
+把块大小参数化，测试用 1/2/3/5/7/13/64/1024/32K 逐档断言"二进制判定与块大小无关，
+且恒等于整份内容含 NUL 或非法 UTF-8"。`chunk=1` 时每个字节都是一条边界，
+跨块情形被穷举，不再依赖"夹具够不够大"。反向验证：改回错误写法后，
+中文+ASCII 用例在 `chunk=2..13` 立即失败。
+
+> 这块逻辑两天内改写过四代（1024 窗口 → 整文件 → 8000 窗口 → 流式 carry），
+> 前几次都靠"夹具是否恰好落在边界"碰运气；性质测试是让它系统性消失的办法。
+
+### 2. diff 路径解析不再受用户 git 配置影响
+
+两个独立缺陷：
+
+1. **前缀不固定**：用户若设了 `diff.mnemonicPrefix = true`，diff 头部变成
+   `--- c/b/gone.go`；设了 `diff.noprefix` 则完全没有前缀。路径还原不出来，
+   diff 贴不上对应变更，还会冒出幽灵条目。现在所有产生 patch 的调用都显式带
+   `--src-prefix=a/ --dst-prefix=b/`。
+2. **`a/`、`b/` 连剥两层**：仓库里真实存在 `b/` 目录时，`--- a/b/x.go`
+   会被剥成 `x.go`（应为 `b/x.go`）。现在只剥与本行匹配的那一个前缀。
+
+实测（仓库里有 `b/` 目录 + 删除 `b/gone.go`，且用户开了 `mnemonicPrefix`）：
+
+| | v1.8.1 | v1.8.2 |
+|---|---|---|
+| 变更数 | **2**（幽灵条目） | **1** |
+| 条目 | `b/gone.go` deleted `+0 −0`（diff 没贴上）<br>`c/b/gone.go` modified `+0 −1` | `b/gone.go` deleted `+0 −1` |
+
+### 3. 输出目的地互斥改为报错
+
+原实现只打印一句警告，然后按真实代码顺序悄悄取一个——而警告里的优先级
+（`clipboard > push > icloud > stats > file`）**与实际顺序相反**（`stats` 分支在
+`copy` 之前 return）。现在互斥组合直接报错，唯一例外是文档化的 `-s -p`
+（`-s` 生成的那份报告就是被推送的内容）：
+
+```
+$ gx -s -c
+Error: output destinations are mutually exclusive, but got -s/--stats + -c/--copy
+  (the only allowed pair is -s -p: the stats report is what gets pushed)
+```
+
+### 4. `.env` 模板不再被当敏感文件
+
+`.env.example` / `.env.sample` / `.env.template` / `.env.dist` 按约定不含真值，
+而且是 LLM 理解"这个项目需要哪些配置项"最有用的文件，现在放行；
+`.env`、`.env.local`、`.env.production` 等仍然拦截。
+
+### 5. 被内置规则跳过的目录现在会报告
+
+`ignoreDirs`（`cache`、`release`、`logs`、`bin`…）是按目录名、任意深度匹配的，
+`pkg/cache/`、`scripts/release/` 这类放着真代码的目录会被整目录跳过，而以前
+**完全静默**——`-v`、`--dry-run` 都看不到。现在统计里会列出来：
+
+```
+  Excluded by rules:   1
+  Ignored dirs:        3 (.git, pkg/cache, scripts/release)
+```
+
+默认列表本身没有收窄（那是行为变更，见 [TODO.md](TODO.md)），先让跳过的东西可见。
+
+### 6. 发布闸门与 CI
+
+v1.8.0 是"打 tag 直接构建发布"放出去的，当天暴露三个线上可见问题。现在：
+
+- `release.yml` 增加 `gate` job（`go vet` + `gofmt -l` + `go test -race` + `node --test`），
+  `goreleaser` 与 `npm-publish` 都要 `needs` 它；
+- 发布构建固定 Go `1.24.x`（原来 `stable`，同一个 tag 在不同时间会用不同工具链）；
+- 权限按 job 最小化（`npm-publish` 不再继承 `contents: write`）；
+- npm 认证改用 `setup-node` 的 `registry-url` + `NODE_AUTH_TOKEN`，
+  不再 echo token 到 `~/.npmrc`，并移除会打印配置的 Debug 步骤；
+- `test.yml` 矩阵加入 **windows-latest**（v1.8.0 的安装 bug 就是因为矩阵里没有
+  Windows 才留到发布后才发现），并加上 `go vet` / `gofmt -l` / `-race`。
+
+### 7. 零碎
+
+| 项 | 说明 |
+|---|---|
+| `install.sh` | 卸载分支写的是 `$SHORTCUT_NAME`（变量实为数组 `SHORTCUT_NAMES`），`~/.local/bin` 清理从未执行 |
+| `LICENSE` | 补上 ISC 全文（`package.json` 早就声明了 ISC 却没有许可证文件） |
+| `package.json` | 补 `engines.node >= 16`（`fs.rmSync` 需要 14.14+）；版本 1.8.2 |
+| `.gitignore` | 补 `git_changes.md`（旧快照会在下次全量扫描里自我污染）、`.sessions/`、`.claude/settings.local.json` |
+| `go.mod` | `go 1.21` → `go 1.23`：CI 从 1.21/1.22 起就不测（macOS 15 dyld 问题），声明与实测对齐 |

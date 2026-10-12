@@ -356,6 +356,107 @@ func TestValidateConfigCombinations(t *testing.T) {
 	}
 }
 
+// 输出目的地互斥：原来只是打印一句警告（而且警告里的优先级与真实代码
+// 顺序相反），现在明确报错。唯一的例外是文档化的 -s -p。
+func TestValidateConfigOutputDestinations(t *testing.T) {
+	conflicts := [][]string{
+		{"-c", "-p"},
+		{"-s", "-c"},
+		{"-s", "--icloud"},
+		{"-c", "--icloud"},
+		{"-p", "--icloud"},
+		{"-s", "-c", "-p"},
+	}
+	for _, args := range conflicts {
+		fs := newTestFlagSet()
+		err := validateConfig(parseFlagsInto(fs, args), fs)
+		if err == nil {
+			t.Errorf("%v 是互斥的输出目的地，应当报错", args)
+			continue
+		}
+		if !strings.Contains(err.Error(), "mutually exclusive") {
+			t.Errorf("%v 的报错为 %q，期望提到 mutually exclusive", args, err.Error())
+		}
+	}
+
+	allowed := [][]string{
+		{},
+		{"-s"},
+		{"-c"},
+		{"-p"},
+		{"--icloud"},
+		{"-s", "-p"}, // 文档化组合：推送的内容就是 -s 生成的那份报告
+	}
+	for _, args := range allowed {
+		fs := newTestFlagSet()
+		if err := validateConfig(parseFlagsInto(fs, args), fs); err != nil {
+			t.Errorf("%v 不该报错: %v", args, err)
+		}
+	}
+}
+
+// diff 头部的 a/ 与 b/ 前缀只能各剥一层：仓库里真实存在 b/ 目录时，
+// 连着剥两层会把 --- a/b/x.go 变成 x.go，diff 贴不上变更还会冒出幽灵条目。
+func TestParseDiffPathStripsOnlyMatchingPrefix(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"a/x.go", "x.go"},
+		{"b/x.go", "x.go"},
+		{"a/b/x.go", "b/x.go"}, // 仓库里有 b/ 目录
+		{"b/b/x.go", "b/x.go"},
+		{"a/a/x.go", "a/x.go"}, // 仓库里有 a/ 目录
+		{"/dev/null", ""},
+		{"a/中文 文档.md", "中文 文档.md"},
+	}
+	for _, c := range cases {
+		if got := parseDiffPath(c.in); got != c.want {
+			t.Errorf("parseDiffPath(%q) = %q，期望 %q", c.in, got, c.want)
+		}
+	}
+}
+
+// .env 模板按约定不含真值，且是 LLM 理解配置项最需要的文件；真 .env 仍然拦。
+func TestIsSensitiveFileEnvTemplates(t *testing.T) {
+	templates := []string{".env.example", ".env.sample", ".env.template", ".env.dist"}
+	for _, name := range templates {
+		if isSensitiveFile(name) {
+			t.Errorf("%s 是模板文件，不该被当敏感文件拦掉", name)
+		}
+	}
+	secrets := []string{".env", ".env.local", ".env.production", "id_rsa", "credentials.json", "server.pem"}
+	for _, name := range secrets {
+		if !isSensitiveFile(name) {
+			t.Errorf("%s 应被判定为敏感文件", name)
+		}
+	}
+}
+
+// 被内置规则整目录跳过的目录以前完全静默，用户无从得知；现在要能报告出来。
+func TestScanDirectoryReportsIgnoredDirs(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "main.go"), "package main\n")
+	mustMkdir(t, filepath.Join(root, "cache"))
+	mustWrite(t, filepath.Join(root, "cache", "store.go"), "package cache\n")
+	mustMkdir(t, filepath.Join(root, "logs"))
+	mustWrite(t, filepath.Join(root, "logs", "app.log"), "x\n")
+
+	// MaxFileSize 必须给：零值会让所有文件都撞上"体积超限"
+	config := Config{RootDir: root, OutputFile: "out.md", MaxFileSize: 500 * 1024}
+	files, stats, skipped := scanDirectory(config)
+	if len(files) != 1 {
+		t.Errorf("只应扫到 1 个文件，实际 %d", len(files))
+	}
+	if stats.IgnoredDirs != 2 {
+		t.Errorf("应记录 2 个被跳过的目录，实际 %d", stats.IgnoredDirs)
+	}
+	joined := strings.Join(stats.IgnoredDirNames, ",")
+	if !strings.Contains(joined, "cache") || !strings.Contains(joined, "logs") {
+		t.Errorf("被跳过的目录名应包含 cache 与 logs，实际 %q", joined)
+	}
+	if len(skipped) != 0 {
+		t.Errorf("目录级跳过不进 skipped 列表，实际 %d 条", len(skipped))
+	}
+}
+
 // ============================================================
 //  git 集成测试
 // ============================================================

@@ -23,10 +23,13 @@ if [[ "$1" == "--uninstall" ]]; then
     # 清理旧版遗留的 gd / godoc 快捷方式
     $USE_SUDO rm -f "$INSTALL_DIR/gd" "$INSTALL_DIR/godoc"
 
-    # 额外检查 ~/.local/bin 以防万一
-    if [[ -f "$HOME/.local/bin/$SHORTCUT_NAME" ]]; then
-        rm -f "$HOME/.local/bin/$SHORTCUT_NAME"
-    fi
+    # 额外检查 ~/.local/bin 以防万一（这里原来写的是 $SHORTCUT_NAME，
+    # 而变量名是数组 SHORTCUT_NAMES，于是这个分支从来没执行过）
+    for name in "${SHORTCUT_NAMES[@]}"; do
+        if [[ -f "$HOME/.local/bin/$name" ]]; then
+            rm -f "$HOME/.local/bin/$name"
+        fi
+    done
 
     echo "✓ 已成功卸载"
     exit 0

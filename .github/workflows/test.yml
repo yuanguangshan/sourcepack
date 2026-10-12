@@ -12,18 +12,27 @@ permissions:
 jobs:
   test:
     strategy:
+      fail-fast: false
       matrix:
         # Go 1.21/1.22 hit dyld "missing LC_UUID load command" on macOS 15
-        # runners (golang/go#69910), so the oldest tested version is 1.23.
+        # runners (golang/go#69910), so the oldest tested version is 1.23
+        # （go.mod 也据此声明 go 1.23）。
         go-version: ['1.23', '1.24', 'stable']
-        os: [ubuntu-latest, macos-latest]
+        # windows 必须有：v1.8.0 在 Windows 上完全装不上
+        # （win32 vs windows 的归档名 + 落地名两处不一致），而当时的矩阵
+        # 只有 ubuntu/macOS，这类问题只可能在发布后才暴露。
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
-      - run: go test ./...
+      - run: go vet ./...
+      - name: gofmt
+        shell: bash
+        run: test -z "$(gofmt -l .)"
+      - run: go test -race ./...
       # npm 侧：归档名 / 落地名一致性（Windows 曾因 win32 vs windows 404）
       - uses: actions/setup-node@v4
         with:

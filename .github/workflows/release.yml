@@ -4,19 +4,43 @@ on:
   push:
     tags: ['v*']
 
+# 权限按 job 最小化：npm-publish 不需要写 contents
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  goreleaser:
+  # 打 tag 先跑闸门。v1.8.0 就是"打 tag 直接构建发布"放出去的，
+  # 当天暴露三个线上可见问题（Windows 装不上、--staged 计数恒 0、-h 丢说明）。
+  # 这些都不是单元测试能覆盖的，但"发布前至少跑一遍全套检查"能拦住一部分。
+  gate:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+      - run: go vet ./...
+      - run: test -z "$(gofmt -l .)"
+      - run: go test -race ./...
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: node --test test/
+
+  goreleaser:
+    needs: gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
-          go-version: 'stable'
+          # 固定版本：'stable' 会让同一个 tag 在不同时间用不同工具链构建，
+          # 产物不可复现
+          go-version: '1.24.x'
       - uses: goreleaser/goreleaser-action@v6
         with:
           args: release --clean
@@ -28,17 +52,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # registry-url + NODE_AUTH_TOKEN 是 setup-node 支持的正式写法，
+      # 不再 echo token 到 ~/.npmrc，也去掉了会打印配置的 Debug 步骤
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Setup npm auth
-        run: |
-          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
-          echo "registry=https://registry.npmjs.org/" >> ~/.npmrc
-      - name: Debug npm config
-        run: |
-          npm config list
-          npm whoami --registry https://registry.npmjs.org/ || echo "whoami failed"
+          registry-url: 'https://registry.npmjs.org'
       - name: Update version in package.json
         run: |
           VERSION=${GITHUB_REF_NAME#v}
@@ -48,3 +67,5 @@ jobs:
             require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
       - run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

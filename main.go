@@ -101,6 +101,10 @@ type Stats struct {
 	Skipped            int
 	DirCount           int
 
+	// 被内置忽略规则整目录跳过的目录（不改列表本身，至少让用户看得见）
+	IgnoredDirs     int
+	IgnoredDirNames []string
+
 	DirMap map[string]*DirStats
 	ExtMap map[string]*ExtStats
 }
@@ -161,6 +165,12 @@ var sensitiveFileExts = map[string]bool{
 // --no-default-ignore 时不生效，保留显式放行的逃生口。
 func isSensitiveFile(name string) bool {
 	lower := strings.ToLower(name)
+	// .env 模板文件按约定不含真值，而它们恰恰是 LLM 理解"这个项目需要哪些
+	// 配置项"最有用的文件，不能和真 .env 一起被当敏感文件杀掉
+	switch lower {
+	case ".env.example", ".env.sample", ".env.template", ".env.dist":
+		return false
+	}
 	// .env 与 .env.* 变体（.env.local、.env.production 等）
 	if lower == ".env" || strings.HasPrefix(lower, ".env.") {
 		return true
@@ -395,25 +405,6 @@ func run(config Config) error {
 		config.NoGitignore = true
 	}
 
-	{
-		n := 0
-		if config.Copy {
-			n++
-		}
-		if config.Push {
-			n++
-		}
-		if config.ICloud {
-			n++
-		}
-		if config.ShowStats {
-			n++
-		}
-		if n > 1 {
-			fmt.Println("⚠  Multiple output modes detected (using priority: clipboard > push > icloud > stats > file)")
-		}
-	}
-
 	if !config.DryRun {
 		fmt.Println("▶ Sourcepack Started")
 	} else {
@@ -522,8 +513,8 @@ func printUsage(w io.Writer, fs *pflag.FlagSet) {
 	fmt.Fprintln(w, "\nConvenience shortcuts:")
 	fmt.Fprintln(w, "  -a              Include all files (disable .gitignore + built-in ignores; .gdignore still applies)")
 	fmt.Fprintln(w, "\nCombinations:")
-	fmt.Fprintln(w, "  -s -p           Show stats and push stats-only markdown to remote")
-	fmt.Fprintln(w, "  -c -p           Not supported (-c takes priority)")
+	fmt.Fprintln(w, "  -s -p           Show stats and push the stats-only markdown (the only allowed pair)")
+	fmt.Fprintln(w, "  other pairs     Error: -s / -c / -p / --icloud are mutually exclusive destinations")
 	fmt.Fprintf(w, "\nEnvironment variables:\n")
 	fmt.Fprintf(w, "  SOURCEPACK_PUSH_URL    Remote URL for push (e.g. https://host/submit)\n")
 	fmt.Fprintf(w, "  SOURCEPACK_AUTH_KEY    X-Auth-Key for push authentication\n")
@@ -681,6 +672,28 @@ func validateConfig(c Config, fs *pflag.FlagSet) error {
 	if fs.Changed("no-subdirs") && c.gitMode() {
 		return fmt.Errorf("-n/--no-subdirs has no effect in git mode; use -m/--match or -d <subdir> instead")
 	}
+
+	// 输出目的地互斥。原实现只是打印一句警告，然后按"实际代码顺序"悄悄取一个
+	// ——而那句警告写的优先级（clipboard > push > icloud > stats > file）与真实
+	// 顺序相反（stats 分支在 copy 之前 return）。与其撒谎，不如明确报错。
+	// 唯一例外是文档化的 -s -p：-s 生成的那份报告正是被推送的内容。
+	var dests []string
+	if c.ShowStats && !c.Push {
+		dests = append(dests, "-s/--stats")
+	}
+	if c.Copy {
+		dests = append(dests, "-c/--copy")
+	}
+	if c.Push {
+		dests = append(dests, "-p/--push")
+	}
+	if c.ICloud {
+		dests = append(dests, "--icloud")
+	}
+	if len(dests) > 1 {
+		return fmt.Errorf("output destinations are mutually exclusive, but got %s\n  (the only allowed pair is -s -p: the stats report is what gets pushed)",
+			strings.Join(dests, " + "))
+	}
 	return nil
 }
 
@@ -770,6 +783,12 @@ func scanDirectory(config Config) ([]FileMetadata, Stats, []SkippedFile) {
 
 		if d.IsDir() {
 			if shouldIgnoreDir(relPath, config, matcher) {
+				// 被内置规则整目录跳过：以前完全静默，用户无从得知。
+				// 这里只做记录与报告，不改默认列表（收窄列表是行为变更，另议）。
+				stats.IgnoredDirs++
+				if len(stats.IgnoredDirNames) < 10 {
+					stats.IgnoredDirNames = append(stats.IgnoredDirNames, relPath)
+				}
 				return filepath.SkipDir
 			}
 			// NoSubdirs：只扫根目录，遇到任何子目录就 SkipDir。
@@ -1141,6 +1160,14 @@ func countLinesBuffer(data []byte) int {
 //  Statistics & Output
 // ============================================================
 
+// moreSuffix 在截断名单时补一个 "(+N more)"，避免读者以为只有列出来的这些。
+func moreSuffix(total, shown int) string {
+	if total > shown {
+		return fmt.Sprintf(", +%d more", total-shown)
+	}
+	return ""
+}
+
 func printStatsTerminal(files []FileMetadata, stats Stats) {
 	fmt.Printf("\n📊 Project Statistics Summary\n")
 	fmt.Printf("  %-20s %d\n", "Files Processed:", stats.FileCount)
@@ -1148,6 +1175,13 @@ func printStatsTerminal(files []FileMetadata, stats Stats) {
 	fmt.Printf("  %-20s %.2f KB\n", "Total Size:", float64(stats.TotalSize)/1024)
 	fmt.Printf("  %-20s %d\n", "Directories:", stats.DirCount)
 	fmt.Printf("  %-20s ~%d tokens\n", "Est. Tokens:", stats.TotalTokens)
+	if stats.ExplicitlyExcluded > 0 {
+		fmt.Printf("  %-20s %d\n", "Excluded by rules:", stats.ExplicitlyExcluded)
+	}
+	if stats.IgnoredDirs > 0 {
+		fmt.Printf("  %-20s %d (%s%s)\n", "Ignored dirs:", stats.IgnoredDirs,
+			strings.Join(stats.IgnoredDirNames, ", "), moreSuffix(stats.IgnoredDirs, len(stats.IgnoredDirNames)))
+	}
 
 	// 1. Top Files by Line Count
 	sort.Slice(files, func(i, j int) bool { return files[i].LineCount > files[j].LineCount })
@@ -1210,6 +1244,14 @@ func generateStatsContent(config Config, files []FileMetadata, stats Stats) stri
 	// Overview
 	fmt.Fprintln(w, "## Overview")
 	fmt.Fprintf(w, "- Files: %d\n- Lines: %d\n- Size: %.2f KB\n- Directories: %d\n- Est. Tokens: ~%d\n\n", stats.FileCount, stats.TotalLines, float64(stats.TotalSize)/1024, stats.DirCount, stats.TotalTokens)
+	if stats.ExplicitlyExcluded > 0 {
+		fmt.Fprintf(w, "- Excluded by rules: %d\n", stats.ExplicitlyExcluded)
+	}
+	if stats.IgnoredDirs > 0 {
+		fmt.Fprintf(w, "- Ignored dirs: %d (%s%s)\n", stats.IgnoredDirs,
+			strings.Join(stats.IgnoredDirNames, ", "), moreSuffix(stats.IgnoredDirs, len(stats.IgnoredDirNames)))
+	}
+	fmt.Fprintln(w)
 
 	// Top Files
 	sort.Slice(files, func(i, j int) bool { return files[i].LineCount > files[j].LineCount })
