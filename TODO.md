@@ -83,51 +83,21 @@ spawn 约 8 个 git 进程（每个约 11ms），光进程开销就 ~90ms，比�
 
 ---
 
-## 3. gitignore 匹配器重写（`**` 失效 / 多层 `.gitignore` / Windows 分隔符）
+## 3. ~~gitignore 匹配器重写~~（已完成，未发布）
 
-**触发条件**：monorepo 用户反馈子目录 `.gitignore` 没生效；或用户反馈
-`**/*.log` 这类写法不工作（**实测现在就是不工作**）。
+已按 git 语义重写，见 `ignore.go` / `ignore_test.go`：
+`**` 全系列、`!` 负向、目录规则、嵌套 `.gitignore`、`\#`/`\!` 转义、
+行尾空格处理、`[!...]` 取反，全部对齐，并以 `git check-ignore` 做真值对照
+（14 模式 × 40 路径完全一致）。`-I/--ignore` 也统一到同一套语义。
 
-**实测结论**（真机）：
-
-| 写法 | 全量扫描模式 | git 模式 |
-|---|---|---|
-| `.gitignore` 里 `**/*.log`、`src/**/*.go` | ❌ 完全不生效（文件照样扫进来） | ✅ 由 git 自己处理 |
-| `.gdignore` 里 `**/*.tmp` | ❌ 不生效 | ❌ 不生效（同一套 matcher） |
-
-也就是说：`**` 在"我们自己实现的匹配器"里基本是坏的，而 README 的特性栏
-写着"支持 `**` 通配等完整 gitignore 语法"。同时 `-I/--ignore` 走的是
-`matchPattern`（`path.Match` 语义），与 gitignore 的匹配器**又是另一套**，
-同一份文档里躺着三种语法、两套实现。
-
-**另外**：`gitignorePattern` 内有三处 `filepath.Match`，在 Windows 上
-`*` 会跨过 `/`（`matchPattern` 已在 v1.8.2 修好，这三处没有）。
-
-**建议方案**（治本）：全量扫描在 git 仓库内时也交给 git 给清单
-（`git ls-files -co --exclude-standard -z`），只有不在仓库里才退回自带匹配器；
-这样嵌套 `.gitignore`、全局 ignore、`.git/info/exclude` 一并自动正确，
-`**` 也不用自己实现。`.gdignore` 作为项目自己的机制，仍需要在 git 清单之上
-自己实现（需要真正的 wildmatch，或明确只支持 `*`/`?` 并在文档里写清）。
-
-无论走哪条路，先补一张"git 官方行为对照表"的表驱动测试
-（`git check-ignore` 为真值），把 `**/*.log`、`src/**/*.go`、`a/**/b`（零层）、
-`**/node_modules` 这些常见写法钉住。
-
-
-**触发条件**：monorepo 用户反馈"子目录里的 `.gitignore` 没生效"。
-
-**现状**：只在根目录读一次 `.gitignore` / `.gdignore`
-（`loadGitignore(config.RootDir)`）。
-
-**为什么不是简单修补**：子目录 `.gitignore` 的语义要求 pattern **只在其所在
-目录下生效**，而当前 matcher 是"扁平 + 最后匹配优先"，无法表达目录作用域。
-要做对得改成"沿路径继承的 matcher 链"（遍历时按目录叠加），约 80 行 + 测试。
-
-**注意**：git 模式（`-g`/`-G`）**故意不重复套用 `.gitignore`**——git 自己已经
-过滤过未跟踪文件，而"已跟踪但恰好命中 `.gitignore`"的文件是真实变更，
-不该因为一条 ignore 规则就藏起来。这个决定见 README 的 Git 变更模式章节。
-
----
+留待将来（不阻塞）：
+- **是否改成"仓库内交给 git 给清单"**：现在自己的匹配器已与 git 一致，
+  收益只剩"全局 `core.excludesFile`、`.git/info/exclude` 自动生效"和
+  少维护一份实现。代价是要处理 `-a`（必须绕开 git 的 exclude）、子模块
+  （`git ls-files` 只给 gitlink，不进子模块内容）、以及两条来源一致性。
+- 默认忽略列表的**收窄**：`bin`/`release`/`logs`/`cache`/`tmp` 这些歧义大的
+  目录名（任意深度匹配）仍在默认忽略里，已发布版本会报告被跳过的目录名，
+  但"该不该默认跳过 `pkg/cache/`"仍待定。
 
 ## 4. `runLimited` 的峰值内存
 

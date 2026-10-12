@@ -665,7 +665,7 @@ func TestGitWorkingTreeClassification(t *testing.T) {
 		t.Errorf(".env 应被敏感文件规则排除: %+v", ch)
 	}
 	// .gdignore 同样生效
-	if ch := changeByPath(cs, "vendor_gd.go"); ch == nil || ch.Filtered != "Ignored by ignore file" {
+	if ch := changeByPath(cs, "vendor_gd.go"); ch == nil || ch.Filtered != "Ignored by .gdignore" {
 		t.Errorf("vendor_gd.go 应被 .gdignore 排除: %+v", ch)
 	}
 	// 内容候选里不应出现被过滤的路径

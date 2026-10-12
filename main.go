@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
@@ -133,62 +132,6 @@ type ExtStats struct {
 //  Ignore Rules & Language Map
 // ============================================================
 
-var ignoreDirs = map[string]bool{
-	".git": true, ".idea": true, ".vscode": true, ".svn": true, ".hg": true,
-	"node_modules": true, "vendor": true, "dist": true, "build": true,
-	"target": true, "bin": true, "out": true, "release": true, "debug": true,
-	"__pycache__": true, ".pytest_cache": true, ".tox": true,
-	".env": true, ".venv": true, "venv": true, "env": true,
-	"Pods": true, "Carthage": true, "CocoaPods": true,
-	"obj": true, "ipch": true, "Debug": true, "Release": true,
-	"x64": true, "x86": true, "arm64": true,
-	".gradle": true, ".sonar": true, ".scannerwork": true,
-	"logs": true, "tmp": true, "temp": true, "cache": true,
-	".history": true, ".nyc_output": true, ".coverage": true,
-}
-
-var ignoreFiles = map[string]bool{
-	"package-lock.json": true, "yarn.lock": true, "go.sum": true,
-	"composer.lock": true, "Gemfile.lock": true,
-	"tags": true, "TAGS": true, ".DS_Store": true,
-	"coverage.xml": true, "thumbs.db": true,
-}
-
-// sensitiveFileExts 是绝不希望进入快照（尤其是 -p 推送到远端）的
-// 敏感文件扩展名。密钥/证书文件对 AI 上下文毫无价值，泄露代价极高。
-var sensitiveFileExts = map[string]bool{
-	".pem": true, ".key": true, ".p12": true, ".pfx": true,
-	".jks": true, ".keystore": true,
-}
-
-// isSensitiveFile 判断文件名是否属于默认必须排除的敏感文件。
-// 覆盖 .env 及其变体（.env.local/.env.production）、私钥、凭据文件等。
-// --no-default-ignore 时不生效，保留显式放行的逃生口。
-func isSensitiveFile(name string) bool {
-	lower := strings.ToLower(name)
-	// .env 模板文件按约定不含真值，而它们恰恰是 LLM 理解"这个项目需要哪些
-	// 配置项"最有用的文件，不能和真 .env 一起被当敏感文件杀掉
-	switch lower {
-	case ".env.example", ".env.sample", ".env.template", ".env.dist":
-		return false
-	}
-	// .env 与 .env.* 变体（.env.local、.env.production 等）
-	if lower == ".env" || strings.HasPrefix(lower, ".env.") {
-		return true
-	}
-	switch lower {
-	case "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
-		".npmrc", ".netrc", ".git-credentials",
-		"credentials.json", "serviceaccountkey.json",
-		"secrets.yaml", "secrets.yml", "secrets.json", "secrets.toml":
-		return true
-	}
-	if ext := filepath.Ext(lower); sensitiveFileExts[ext] {
-		return true
-	}
-	return false
-}
-
 var languageMap = map[string]string{
 	".go": "go", ".js": "javascript", ".ts": "typescript", ".py": "python",
 	".c": "c", ".cpp": "cpp", ".h": "cpp", ".hpp": "cpp", ".cc": "cpp",
@@ -202,173 +145,6 @@ var languageMap = map[string]string{
 	".vue": "vue", ".svelte": "svelte", ".dart": "dart", ".lua": "lua",
 	".pl": "perl", ".ex": "elixir", ".erl": "erlang", ".hs": "haskell",
 	".ml": "ocaml", ".clj": "clojure", ".tf": "hcl",
-}
-
-// ============================================================
-//  Gitignore Pattern Matching
-// ============================================================
-
-type gitignoreMatcher struct {
-	patterns []gitignorePattern
-}
-
-type gitignorePattern struct {
-	negate   bool   // ! prefix
-	dirOnly  bool   // trailing /
-	anchored bool   // leading /
-	starStar bool   // contains **
-	raw      string // pattern text after stripping markers
-	literal  string // longest literal prefix (before any glob char)
-}
-
-// loadGitignore reads and parses a .gitignore file.
-func loadGitignore(root string) *gitignoreMatcher {
-	return loadIgnoreFile(filepath.Join(root, ".gitignore"))
-}
-
-// loadGdignore reads and parses a .gdignore file — a sourcepack-specific
-// ignore file with the same syntax as .gitignore, letting you exclude files
-// from snapshots without modifying your project's .gitignore.
-func loadGdignore(root string) *gitignoreMatcher {
-	return loadIgnoreFile(filepath.Join(root, ".gdignore"))
-}
-
-func loadIgnoreFile(path string) *gitignoreMatcher {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return &gitignoreMatcher{}
-	}
-	var m gitignoreMatcher
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	for scanner.Scan() {
-		if p, ok := parseGitignoreLine(scanner.Text()); ok {
-			m.patterns = append(m.patterns, p)
-		}
-	}
-	return &m
-}
-
-func parseGitignoreLine(line string) (gitignorePattern, bool) {
-	raw := strings.TrimSpace(line)
-	if raw == "" || strings.HasPrefix(raw, "#") {
-		return gitignorePattern{}, false
-	}
-
-	p := gitignorePattern{}
-	if strings.HasPrefix(raw, "!") {
-		p.negate = true
-		raw = raw[1:]
-	}
-	if strings.HasSuffix(raw, "/") {
-		p.dirOnly = true
-		raw = strings.TrimSuffix(raw, "/")
-	}
-	if strings.HasPrefix(raw, "/") {
-		p.anchored = true
-		raw = raw[1:]
-	}
-
-	p.starStar = strings.Contains(raw, "**")
-
-	// Extract literal prefix (text before first * / ? / [)
-	for i, c := range raw {
-		if c == '*' || c == '?' || c == '[' {
-			p.literal = raw[:i]
-			break
-		}
-	}
-	if !strings.ContainsAny(raw, "*?[") {
-		p.literal = raw
-	}
-
-	p.raw = raw
-	return p, true
-}
-
-// ShouldIgnore returns (applies, ignoreLast) — the first bool says whether
-// the pattern applies to this path at all (dir-only patterns skip files),
-// and the second bool is the matched result adjusted for negation
-// (normal match → ignore, negated match → don't ignore).
-func (m *gitignoreMatcher) ShouldIgnore(path string, isDir bool) (applies bool, shouldIgnore bool) {
-	var matched bool
-	for _, p := range m.patterns {
-		if p.dirOnly && !isDir {
-			continue
-		}
-		if p.matches(path) {
-			matched = true
-			shouldIgnore = !p.negate
-		}
-	}
-	return matched, shouldIgnore
-}
-
-func (p gitignorePattern) matches(path string) bool {
-	target := path
-	// Non-anchored pattern without a / matches basename only.
-	if !p.anchored && !strings.Contains(p.raw, "/") {
-		target = filepath.Base(path)
-	}
-	if p.starStar {
-		return matchWithStarStar(p.raw, target)
-	}
-	ok, _ := filepath.Match(p.raw, target)
-	return ok
-}
-
-// matchWithStarStar handles gitignore-style ** patterns.
-// It splits the pattern at ** and verifies each segment appears in order.
-func matchWithStarStar(pattern, path string) bool {
-	parts := strings.Split(pattern, "**")
-	remaining := path
-
-	for i, part := range parts {
-		if part == "" {
-			continue
-		}
-		if i == 0 {
-			// First segment must be a prefix (glob‑compatible)
-			if len(remaining) < len(part) {
-				return false
-			}
-			ok, _ := filepath.Match(part, remaining[:len(part)])
-			if !ok && !strings.HasPrefix(remaining, part) {
-				return false
-			}
-			remaining = remaining[len(part):]
-		} else if i == len(parts)-1 {
-			// Last segment must be a suffix
-			if len(remaining) < len(part) {
-				return false
-			}
-			suffix := remaining[len(remaining)-len(part):]
-			ok, _ := filepath.Match(part, suffix)
-			return ok
-		} else {
-			// Middle segment must appear somewhere
-			idx := strings.Index(remaining, part)
-			if idx < 0 {
-				return false
-			}
-			remaining = remaining[idx+len(part):]
-		}
-	}
-	return true
-}
-
-// matchPattern is a simpler glob match used for AdditionalIgnores and some tests.
-// Patterns without a path separator match against basename.
-func matchPattern(filePath, pattern string) bool {
-	// 用 path.Match（分隔符固定为 "/"）而不是 filepath.Match：调用方传入的
-	// 路径已经过 filepath.ToSlash 归一，而 filepath.Match 在 Windows 上把
-	// "\\" 当分隔符、把 "/" 当普通字符，于是 "*" 会跨过 "/" ——
-	// src/*.go 会错误匹配 src/sub/main.go（-I/-x/-X 在 Windows 上过度排除）。
-	if !strings.ContainsAny(pattern, "/\\") {
-		m, _ := path.Match(pattern, path.Base(filePath))
-		return m
-	}
-	m, _ := path.Match(pattern, filePath)
-	return m
 }
 
 // ============================================================
@@ -749,16 +525,25 @@ func scanDirectory(config Config) ([]FileMetadata, Stats, []SkippedFile) {
 	}
 	var skipped []SkippedFile
 
-	var matcher = &gitignoreMatcher{}
+	// .gitignore（含各级子目录的嵌套）与 .gdignore 都按 gitignore 语义生效。
+	// -a / --no-gitignore 只是不读 .gitignore，.gdignore 仍然生效。
+	var ignoreNames []string
 	if !config.NoGitignore {
-		matcher = loadGitignore(config.RootDir)
+		ignoreNames = append(ignoreNames, ".gitignore")
 	}
-	gdMatcher := loadGdignore(config.RootDir)
-	matcher.patterns = append(matcher.patterns, gdMatcher.patterns...)
+	ignoreNames = append(ignoreNames, ".gdignore")
+	matcher := newIgnoreMatcher(config.RootDir, ignoreNames...)
+	matcher.addCLIPatterns(config.AdditionalIgnores)
 
 	if config.Verbose {
-		if len(matcher.patterns) > 0 {
-			fmt.Printf("  Loaded ignore patterns (%d)\n", len(matcher.patterns))
+		var present []string
+		for _, n := range ignoreNames {
+			if _, err := os.Stat(filepath.Join(config.RootDir, n)); err == nil {
+				present = append(present, n)
+			}
+		}
+		if len(present) > 0 {
+			fmt.Printf("  Ignore files:        %s (子目录中的同名文件同样生效)\n", strings.Join(present, ", "))
 		}
 	}
 
@@ -902,94 +687,6 @@ func accumulateStats(stats *Stats, fMeta FileMetadata, tokens int) {
 	stats.ExtMap[ext].FileCount++
 	stats.ExtMap[ext].TotalSize += fMeta.Size
 	stats.ExtMap[ext].TotalLines += fMeta.LineCount
-}
-
-func shouldIgnoreDir(relPath string, config Config, matcher *gitignoreMatcher) bool {
-	name := filepath.Base(relPath)
-	if !config.NoDefaultIgnore && ignoreDirs[name] {
-		return true
-	}
-	for _, p := range config.AdditionalIgnores {
-		if matchPattern(relPath, p) {
-			return true
-		}
-	}
-	if matcher != nil {
-		if applies, ignore := matcher.ShouldIgnore(relPath, true); applies && ignore {
-			return true
-		}
-	}
-	return false
-}
-
-func shouldIgnoreFile(relPath string, config Config, matcher *gitignoreMatcher) bool {
-	return shouldIgnoreFileReason(relPath, config, matcher) != ""
-}
-
-// shouldIgnoreFileReason 与 shouldIgnoreFile 判定完全一致，但返回被排除的
-// 原因（"" 表示保留）。git 变更模式需要把"被谁过滤掉了"如实列出来，
-// 否则用户会以为变更丢了。
-func shouldIgnoreFileReason(relPath string, config Config, matcher *gitignoreMatcher) string {
-	name := filepath.Base(relPath)
-	ext := filepath.Ext(relPath)
-	if !config.NoDefaultIgnore && ignoreFiles[name] {
-		return "Default ignore file"
-	}
-	// 敏感文件（.env、私钥、凭据）默认一律排除，防止快照/推送泄露密钥
-	if !config.NoDefaultIgnore && isSensitiveFile(name) {
-		return "Sensitive file"
-	}
-	// 用户用 -I/--ignore 追加的忽略模式。
-	//
-	// 注意：这里必须也检查一遍文件。原实现只在 shouldIgnoreDir 里检查
-	// AdditionalIgnores，导致 -I 'top.md'、-I '*.md' 这类**针对文件**的
-	// 模式完全不生效——只有写成 -I 'src/' 这种目录模式才管用，
-	// 而用户无法从文档看出这个区别。
-	for _, p := range config.AdditionalIgnores {
-		if matchPattern(relPath, p) {
-			return "Ignored by -I/--ignore"
-		}
-	}
-	if len(config.IncludeExts) > 0 {
-		match := false
-		for _, e := range config.IncludeExts {
-			if strings.EqualFold(ext, e) {
-				match = true
-				break
-			}
-		}
-		if !match {
-			return "Not in -i/--include"
-		}
-	}
-	if len(config.IncludeMatches) > 0 {
-		match := false
-		for _, m := range config.IncludeMatches {
-			if strings.Contains(relPath, m) {
-				match = true
-				break
-			}
-		}
-		if !match {
-			return "Not in -m/--match"
-		}
-	}
-	for _, e := range config.ExcludeExts {
-		if strings.EqualFold(ext, e) {
-			return "Excluded by -x/--exclude"
-		}
-	}
-	for _, m := range config.ExcludeMatches {
-		if strings.Contains(relPath, m) {
-			return "Excluded by -X/--exclude-match"
-		}
-	}
-	if matcher != nil {
-		if applies, ignore := matcher.ShouldIgnore(relPath, false); applies && ignore {
-			return "Ignored by ignore file"
-		}
-	}
-	return ""
 }
 
 // isBinaryBuffer 判断一段字节是否应按二进制处理。

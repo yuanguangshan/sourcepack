@@ -8,37 +8,83 @@ import (
 	"unicode/utf8"
 )
 
-func TestMatchPattern(t *testing.T) {
+// -I/--ignore 与 .gitignore 现在共用 gitignore 语义的匹配器
+// （v1.8.2 之前 -I 走的是 filepath.Match 的简化 glob，Windows 上 * 会跨过 /）。
+func TestIgnoreRuleGlobSemantics(t *testing.T) {
+	rule := func(pat string) ignoreRule {
+		r, ok := parseIgnoreLine(pat)
+		if !ok {
+			t.Fatalf("模式 %q 应能解析", pat)
+		}
+		return r
+	}
 	tests := []struct {
-		path    string
 		pattern string
+		path    string
+		isDir   bool
 		want    bool
 	}{
-		// Basename matching (no path separator in pattern)
-		{"snapshot.go", "snapshot.go", true},
-		{"snapshot.go", "snapshot", false}, // exact basename match only, no prefix
-		{"src/snapshot.go", "snapshot.go", true},
-		{"src/snapshot.go", "snapshot", false},
-		{"foo.go", "*.go", true},
-		{"foo.txt", "*.go", false},
-		{"README.md", "*.md", true},
-
-		// Wildcard patterns
-		{"test.txt", "test.*", true},
-		{"test.go", "test.*", true},
-		{"main.go", "test.*", false},
-
-		// Path-based patterns (contain /)
-		{"src/main.go", "src/*.go", true},
-		{"src/main.go", "pkg/*.go", false},
-		{"src/sub/main.go", "src/*.go", false}, // "*" 不跨过 "/"（必须用 path.Match：filepath.Match 在 Windows 上会匹配）
+		// 不含 / 的模式：匹配任意层级的名字
+		{"snapshot.go", "snapshot.go", false, true},
+		{"snapshot.go", "src/snapshot.go", false, true},
+		{"snapshot", "snapshot.go", false, false}, // 整名匹配，不是前缀
+		{"*.go", "src/deep/x.go", false, true},
+		{"*.go", "x.txt", false, false},
+		// 含 / 的模式：相对根目录生效
+		{"src/*.go", "src/main.go", false, true},
+		{"src/*.go", "src/sub/main.go", false, false}, // "*" 不跨过 "/"
+		{"src/*.go", "pkg/main.go", false, false},
+		// 末尾 /：只匹配目录，且其下内容一并命中
+		{"build/", "build", true, true},
+		{"build/", "build/x.go", false, true},
+		{"build/", "src/build/x.go", false, true},
+		{"build/", "builder", true, false},
 	}
-
 	for _, tt := range tests {
-		got := matchPattern(tt.path, tt.pattern)
-		if got != tt.want {
-			t.Errorf("matchPattern(%q, %q) = %v, want %v", tt.path, tt.pattern, got, tt.want)
+		if got := rule(tt.pattern).matches(tt.path, tt.isDir); got != tt.want {
+			t.Errorf("%q matches %q (dir=%v) = %v, want %v", tt.pattern, tt.path, tt.isDir, got, tt.want)
 		}
+	}
+}
+
+// ** 的三种位置（这是 README 承诺、但旧实现完全失效的语法）
+func TestIgnoreRuleDoubleStar(t *testing.T) {
+	rule := func(pat string) ignoreRule {
+		r, _ := parseIgnoreLine(pat)
+		return r
+	}
+	tests := []struct {
+		pattern string
+		path    string
+		want    bool
+	}{
+		{"**/*.log", "app.log", true}, // 零层目录
+		{"**/*.log", "src/app.log", true},
+		{"**/*.log", "a/b/server.log", true},
+		{"**/*.log", "app.txt", false},
+		{"src/**/*.go", "src/handler.go", true}, // 零层
+		{"src/**/*.go", "src/pkg/handler.go", true},
+		{"src/**/*.go", "src/a/b/handler.go", true},
+		{"src/**/*.go", "other/handler.go", false},
+		{"a/**/b", "a/b", true},
+		{"a/**/b", "a/x/b", true},
+		{"a/**/b", "a/x/y/b", true},
+		{"a/**/b", "a/b/c", false},
+		{"**/node_modules", "node_modules", true},
+		{"**/node_modules", "deep/node_modules", true},
+		// abc/** 只匹配 abc 内部的内容，不含 abc 自身
+		// （实测 git check-ignore：abc 保留、abc/x.txt 忽略）
+		{"abc/**", "abc", false},
+		{"abc/**", "abc/x.txt", true},
+		{"abc/**", "abc/d/x.txt", true},
+	}
+	for _, tt := range tests {
+		if got := rule(tt.pattern).matches(tt.path, false); got != tt.want {
+			t.Errorf("%q matches %q = %v, want %v", tt.pattern, tt.path, got, tt.want)
+		}
+	}
+	if rule("abc/**").matches("abcd", false) {
+		t.Error("abc/** 不该匹配 abcd")
 	}
 }
 
@@ -427,7 +473,7 @@ func TestIsSensitiveFile(t *testing.T) {
 
 func TestShouldIgnoreFileSensitiveDefaults(t *testing.T) {
 	cfg := Config{}
-	matcher := (*gitignoreMatcher)(nil)
+	matcher := (*ignoreMatcher)(nil)
 
 	if !shouldIgnoreFile(".env", cfg, matcher) {
 		t.Error(".env 应被默认忽略")

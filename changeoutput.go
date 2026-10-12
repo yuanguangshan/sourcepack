@@ -33,8 +33,10 @@ func buildChangeFiles(config *Config, cs *ChangeSet) ([]FileMetadata, Stats, []S
 	}
 	var files []FileMetadata
 
-	gd := loadGdignore(config.RootDir)
-	matcher := &gitignoreMatcher{patterns: gd.patterns}
+	// git 模式的文件清单来自 git 自己（--exclude-standard），所以 .gitignore
+	// 已经由 git 应用过了，这里只需再叠加 Sourcepack 自己的 .gdignore。
+	matcher := newIgnoreMatcher(config.RootDir, ".gdignore")
+	matcher.addCLIPatterns(config.AdditionalIgnores)
 
 	// 输出文件自己不该出现在变更里（与全量模式一致）。
 	// 走真实路径再算相对路径，避免 -o /tmp/... 与仓库真实路径
@@ -198,7 +200,7 @@ func realPathOrSelf(p string) string {
 }
 
 // changeFilterReason 判定一个变更路径是否被过滤，返回原因（"" = 保留）。
-func changeFilterReason(relPath string, config Config, matcher *gitignoreMatcher) string {
+func changeFilterReason(relPath string, config Config, matcher *ignoreMatcher) string {
 	if !config.NoDefaultIgnore {
 		parts := strings.Split(relPath, "/")
 		for _, part := range parts[:len(parts)-1] {
