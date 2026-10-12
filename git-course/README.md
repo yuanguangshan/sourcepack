@@ -1,0 +1,70 @@
+# Git 深入课（以 sourcepack 为标本）
+
+> 这套课程不背命令，而是**拆开 Git 看它怎么工作**：每一章都在这台机器上跑真命令、
+> 留真输出，并回到 sourcepack 的源码里指出"我们为什么要这么调用 Git"。
+>
+> 标本仓库：**sourcepack**（135 个提交，经历了 3 次改名、一次 Git 插件化重构，
+> 有 tag、有 CI、有 goreleaser 发布链路——麻雀虽小，五脏俱全）。
+
+---
+
+## 怎么用这套课
+
+**1. 先建一个实验克隆**（重要：破坏性实验绝不在你真在用的仓库上做）
+
+```bash
+git clone /Users/ygs/ygs/sourcepack /tmp/git-lab
+cd /tmp/git-lab
+git config user.email lab@example.com
+git config user.name Lab
+```
+
+为什么单独克隆：后面几章会做 `reset`、`rebase`、`filter-branch`、造"丢失的提交"
+这类操作，它们会**改写历史**。克隆里随便折腾，`sourcepack` 本体毫发无损。
+
+**2. 每章都有"动手实验"**：命令可以直接抄。实验都在 `/tmp/git-lab` 里做。
+
+**3. 每章的"回到 sourcepack"小节**把 Git 的行为映射到我们自己的代码，
+例如第 2 章会看到 `changeset.go` 里那个 `4b825dc642cb6eb9a060e54bf8d69288fbee4904`
+到底从哪来的——它不是什么魔法常量，就是 Git 的空树对象。
+
+---
+
+## 目录
+
+| 章 | 标题 | 核心问题 |
+| :--- | :--- | :--- |
+| [01](01-history-and-philosophy.md) | 起源与设计哲学 | Git 为什么长这样？快照、内容寻址、三棵树 |
+| [02](02-object-model.md) | 对象模型 | blob/tree/commit/tag 到底是什么字节？哈希怎么算的 |
+| 03 | 引用、HEAD 与 reflog | 分支只是 41 字节的文件；"提交丢了"是怎么回事 |
+| 04 | 索引（暂存区） | `add` 到底做了什么？staged/unstaged 的真实含义 |
+| 05 | 提交图与分支合并 | 父子链、merge 的两条父边、fast-forward、merge-base |
+| 06 | diff 算法与 patch 格式 | Myers 算法、unified diff 头、`a/` `b/` 前缀与重命名检测 |
+| 07 | 忽略规则 | `.gitignore` 语义、嵌套、`core.excludesFile`、`check-ignore` |
+| 08 | 远端与传输 | refspec、fetch/push 语义、packfile 协商、force-with-lease |
+| 09 | 历史改写与恢复 | rebase/cherry-pick/revert/reset/reflog/fsck 找回丢失提交 |
+| 10 | 性能与底层 | delta 链、bitmap、commit-graph、partial clone、sparse checkout |
+| 11 | 钩子、签名与发布 | hooks、GPG 签名、tag 发布链路（我们的 release.yml） |
+| 12 | sourcepack 的 Git 用法全解 | 逐条讲解我们发起的每个 git 调用与 hardening 细节 |
+
+> 章节按"先原理、后操作、再回到自己的代码"编排。01–02 是地基，03–05 是日常
+> 操作的真相，06–08 是传输与格式，09–12 是进阶与实战。
+
+---
+
+## 阅读约定
+
+- 代码块里 `$` 开头的是命令，下一行是**真实输出**（不是示意）。
+- 标注 `[lab]` 的命令在 `/tmp/git-lab` 里执行；标注 `[repo]` 的在
+  `sourcepack` 本体执行。
+- 涉及"为什么 sourcepack 这么写"的地方，会给出 `文件:行号`。
+
+---
+
+## 进度
+
+| 章 | 状态 |
+| :--- | :--- |
+| 01 起源与设计哲学 | ✅ 已完成 |
+| 02 对象模型 | ✅ 已完成 |
+| 03–12 | 待续 |
