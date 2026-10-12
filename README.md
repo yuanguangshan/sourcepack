@@ -5,6 +5,11 @@
 > 📖 全部参数的详细说明与实测示例见 **[PARAMETERS.md](PARAMETERS.md)**（参数手册）。
 >
 > 🎓 想深入 Git？本仓库附带一套 12 章的 **[Git 深入课](git-course/README.md)**——以本项目为标本，从对象模型、索引、提交图讲到性能与发布链路，每章都附本机实测输出与动手实验（[博客版](git-course/published-urls.md)）。
+>
+> 📘 这套课也已装订成**一本书**（5 部 12 章 + 4 份附录：术语表 / 命令速查 / 知识地图 / 延伸阅读）。
+> 书稿源在 [`book/`](book/src/)（`book/src/` 是元内容与附录，`git-course/` 是正文）；
+> 要 HTML / EPUB / Markdown 三种形态，先跑一次 `python3 book/tools/build.py`（零依赖，只用标准库），
+> 产物落在 `book/dist/`。
 
 Sourcepack 是一个极简、高性能的工具，用于扫描项目目录并将代码合并为单个 Markdown 文件，方便你快速喂给 LLM (GPT/Claude) 或进行代码审计。
 
