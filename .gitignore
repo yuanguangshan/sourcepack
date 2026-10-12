@@ -12,3 +12,6 @@ git_changes.md
 .codex/
 .sessions/
 .claude/settings.local.json
+# book/ 构建产物（源稿若入库，产物不入库）
+book/dist/
+book/tools/__pycache__/
