@@ -45,7 +45,7 @@ git config user.name Lab
 | [09](09-rewrite-and-recovery.md) | 历史改写与恢复 | rebase/cherry-pick/revert/reset/reflog/fsck 找回丢失提交 |
 | [10](10-performance-and-plumbing.md) | 性能与底层 | delta 链、bitmap、commit-graph、partial clone、sparse checkout |
 | [11](11-hooks-signing-release.md) | 钩子、签名与发布 | hooks、SSH/GPG 签名、tag 发布链路（我们的 release.yml） |
-| 12 | sourcepack 的 Git 用法全解 | 逐条讲解我们发起的每个 git 调用与 hardening 细节 |
+| [12](12-sourcepack-git-internals.md) | sourcepack 的 Git 用法全解 | 逐条讲解我们发起的每个 git 调用与 hardening 细节 |
 
 > 章节按"先原理、后操作、再回到自己的代码"编排。01–02 是地基，03–05 是日常
 > 操作的真相，06–08 是传输与格式，09–12 是进阶与实战。
@@ -76,7 +76,10 @@ git config user.name Lab
 | 09 历史改写与恢复 | ✅ 已完成 |
 | 10 性能与底层 | ✅ 已完成 |
 | 11 钩子、签名与发布 | ✅ 已完成 |
-| 12 | 待续 |
+| 12 sourcepack 的 Git 用法全解 | ✅ 已完成 |
+
+**全 12 章已完成。** 建议按顺序读 01→12；每章末尾的"动手实验"可以直接抄命令，
+实验请在隔离克隆里做（见上）。
 
 ---
 
@@ -95,3 +98,4 @@ git config user.name Lab
 | 09 | 改写 = 造新对象 + 移动引用；`reset` 三模式对应三棵树；**reword 一个提交会让下游哈希全变**；恢复三层 ORIG_HEAD → reflog → fsck |
 | 10 | **delta 压缩**让快照不臃肿（禁深链体积涨 5.6×）；**commit-graph 让纯遍历快 3.4×**；partial clone 有"本地路径被忽略"与"服务端需 allowFilter"两个静默陷阱 |
 | 11 | 客户端钩子可被 `--no-verify` 绕过、服务端钩子不可绕过；**SSH 也能签提交与 tag**；发布链路 = tag → gate → goreleaser → npm + 两段冒烟 |
+| 12 | 所有 git 调用收在一层 `gitRunner`；**用 0x1F 而非空格做字段分隔符**；12 条"读 Git 的工具"checklist；全课知识地图 |
