@@ -42,7 +42,7 @@ git config user.name Lab
 | [06](06-diff-and-patch.md) | diff 算法与 patch 格式 | Myers 算法、unified diff 头、`a/` `b/` 前缀与重命名检测 |
 | [07](07-ignore-rules.md) | 忽略规则 | `.gitignore` 语义、嵌套、`core.excludesFile`、`check-ignore` |
 | [08](08-remote-and-transfer.md) | 远端与传输 | refspec、fetch/push 语义、packfile 协商、force-with-lease |
-| 09 | 历史改写与恢复 | rebase/cherry-pick/revert/reset/reflog/fsck 找回丢失提交 |
+| [09](09-rewrite-and-recovery.md) | 历史改写与恢复 | rebase/cherry-pick/revert/reset/reflog/fsck 找回丢失提交 |
 | 10 | 性能与底层 | delta 链、bitmap、commit-graph、partial clone、sparse checkout |
 | 11 | 钩子、签名与发布 | hooks、GPG 签名、tag 发布链路（我们的 release.yml） |
 | 12 | sourcepack 的 Git 用法全解 | 逐条讲解我们发起的每个 git 调用与 hardening 细节 |
@@ -73,7 +73,8 @@ git config user.name Lab
 | 06 diff 算法与 patch 格式 | ✅ 已完成 |
 | 07 忽略规则 | ✅ 已完成 |
 | 08 远端与传输 | ✅ 已完成 |
-| 09–12 | 待续 |
+| 09 历史改写与恢复 | ✅ 已完成 |
+| 10–12 | 待续 |
 
 ---
 
@@ -89,3 +90,4 @@ git config user.name Lab
 | 06 | diff 是用时算的；**前缀可被用户配置改写**（sourcepack 显式固定）；`--no-textconv` 让工具不受用户外部命令影响 |
 | 07 | `.gitignore` **只管未跟踪文件**；`abc/**` 不含自身；**父目录被排除后 `!` 救不回**——后者是 git 变更模式必须显式回溯祖先的原因 |
 | 08 | 远端就是"没有工作区的仓库"；`fetch` 永远安全、`push` 有非快进保护；**传输是增量的**（want/have 协商，实测每次只多 3 个对象） |
+| 09 | 改写 = 造新对象 + 移动引用；`reset` 三模式对应三棵树；**reword 一个提交会让下游哈希全变**；恢复三层 ORIG_HEAD → reflog → fsck |
