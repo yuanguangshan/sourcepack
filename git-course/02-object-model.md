@@ -354,7 +354,7 @@ git cat-file -p "$COMMIT"
 git log --oneline --name-status -M --follow -- main.go | grep '^R'
 ```
 
-**思考题**：
+### 自测题
 
 1. 如果两个文件内容完全相同、文件名不同，`git add` 之后 `.git/objects` 里有几个对象？
 2. `git commit` 之后索引变了吗？HEAD 变了吗？如果此时 `git status`，三个区域谁和谁比对？
