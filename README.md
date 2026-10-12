@@ -707,7 +707,19 @@ v1.8.0 是"打 tag 直接构建发布"放出去的，当天暴露三个线上可
 - `test.yml` 矩阵加入 **windows-latest**（v1.8.0 的安装 bug 就是因为矩阵里没有
   Windows 才留到发布后才发现），并加上 `go vet` / `gofmt -l` / `-race`。
 
-### 7. 零碎
+### 7. CI 加上 windows-latest 之后，当天就抓到两个平台问题
+
+这两个以前根本看不见——v1.8.0 的 Windows 安装 bug 也是同一个原因留到发布后才暴露。
+
+| 问题 | 现象 | 修法 |
+|---|---|---|
+| CRLF 让格式闸门假失败 | Windows runner 的系统 gitconfig 里 `core.autocrlf=true`，检出的文本文件是 CRLF，而 `gofmt -l` 把 CRLF 判成"未格式化"，3 个 Windows job 全挂在 `gofmt` | 新增 `.gitattributes`：`* text=auto eol=lf`（同时让 `gofmt` 步骤打印违规文件，不再靠 `test -z` 吞掉输出） |
+| `*` 在 Windows 上跨过 `/` | `matchPattern("src/sub/main.go", "src/*.go")` 返回 `true`：`filepath.Match` 在 Windows 上把 `\` 当分隔符、把 `/` 当普通字符。影响 `-I/-x/-X` 在 Windows 上过度排除 | 改用斜杠语义的 `path.Match`（调用方传入的路径早已 `ToSlash` 归一） |
+
+> `gitignorePattern` 里还有三处 `filepath.Match`，同一个问题；它要连同 `**` 一起重写，
+> 见 [TODO.md](TODO.md)。
+
+### 8. 零碎
 
 | 项 | 说明 |
 |---|---|
