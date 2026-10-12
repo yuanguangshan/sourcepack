@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestMatchPattern(t *testing.T) {
@@ -247,11 +249,58 @@ func TestScanFileStatsDetectsBinaryBeyondProbeWindow(t *testing.T) {
 		t.Errorf("第 9000 字节后的 NUL 应判为二进制（err=%v binary=%v）", err, isBinary)
 	}
 
-	// 整文件合法则不能误杀（跨块边界的中文最容易出问题）
+	// 整文件合法则不能误杀。注意别再指望"文件够大就跨块"——上一版这里写着
+	// "跨多个块边界"，实际只有 15000 字节（小于 32KB 块），一条边界都没跨，
+	// 于是漏掉了真 bug。现在直接用小块把边界穷举掉。
 	big := filepath.Join(dir, "big_ok.txt")
-	mustWrite(t, big, strings.Repeat("中", 5000)) // 15000 字节，跨多个块边界
-	if _, isBinary, _, err := scanFileStats(big, true); err != nil || isBinary {
-		t.Errorf("整文件合法 UTF-8 不该判为二进制（err=%v binary=%v）", err, isBinary)
+	mustWrite(t, big, strings.Repeat("中", 5000))
+	for _, size := range []int{1, 7, 4096, scanChunkSize} {
+		if _, isBinary, _, err := scanFileStatsChunk(big, true, size); err != nil || isBinary {
+			t.Errorf("整文件合法 UTF-8 不该判为二进制（chunk=%d, err=%v binary=%v）", size, err, isBinary)
+		}
+	}
+}
+
+// 性质测试：二进制判定必须与块大小无关，且恒等于"整份内容含 NUL 或非法 UTF-8"。
+//
+// 这块逻辑两天内改写过四次（1024 窗口 → 整文件 → 8000 窗口 → 流式 carry），
+// 每次都被"夹具够不够接近边界"的运气左右。把块大小参数化后，跨块边界的
+// 情形被穷举：chunk=1 时每个字节都是一条边界。
+//
+// 历史 bug：scan = append(scan[:carryLen], chunk...) 切的是旧缓冲区开头，
+// carry 内容从未拼回，于是任何跨 32KB 边界且含中文的文件（中文注释 + ASCII
+// 混排）被整文件判成二进制；纯汉字因为文件开头恰好是完整的 lead+continuation
+// 而"凑巧"通过。v1.8.1 线上就是这个状态。
+func TestScanFileStatsBinaryVerdictIsChunkSizeIndependent(t *testing.T) {
+	corpus := []struct {
+		name    string
+		content string
+	}{
+		{"纯汉字", strings.Repeat("中", 5000)},
+		{"中文注释 + ASCII 代码", "package p\n\n" + strings.Repeat("func F() int { return 1 }  // 中文注释\n", 500)},
+		{"中文正文 + ASCII", strings.Repeat("第 N 行：中文正文夹 ASCII token。\n", 1000)},
+		{"emoji 混排", strings.Repeat("emoji 😀 混排 text\n", 800)},
+		{"纯 ASCII", strings.Repeat("ascii only\n", 2000)},
+		{"含 NUL", "a\x00b" + strings.Repeat("x", 5000)},
+		{"末尾非法 UTF-8", strings.Repeat("x", 4000) + "\xff\xfe"},
+		{"开头非法 UTF-8", "\xff\xfe" + strings.Repeat("中", 1000)},
+		{"空文件", ""},
+	}
+	sizes := []int{1, 2, 3, 5, 7, 13, 64, 1024, scanChunkSize}
+	for _, c := range corpus {
+		p := filepath.Join(t.TempDir(), "f.bin")
+		mustWrite(t, p, c.content)
+		want := bytes.IndexByte([]byte(c.content), 0) >= 0 || !utf8.ValidString(c.content)
+		for _, size := range sizes {
+			_, isBinary, _, err := scanFileStatsChunk(p, true, size)
+			if err != nil {
+				t.Fatalf("%s(chunk=%d): %v", c.name, size, err)
+			}
+			if isBinary != want {
+				t.Errorf("%s(chunk=%d, %d 字节): isBinary=%v，期望 %v",
+					c.name, size, len(c.content), isBinary, want)
+			}
+		}
 	}
 }
 

@@ -1031,22 +1031,40 @@ func incompleteUTF8Tail(b []byte) int {
 // 判定范围是**整个文件**，不是前 N 字节：窗口截断会把切在多字节字符
 // 中间的合法 UTF-8 误判成非法（实测任何 >8KB 且含中文的文件都会被误杀）。
 func scanFileStats(path string, probeBinary bool) (lineCount int, isBinary bool, tokens int, err error) {
+	return scanFileStatsChunk(path, probeBinary, scanChunkSize)
+}
+
+// scanChunkSize 是流式扫描的默认块大小。
+const scanChunkSize = 32 * 1024
+
+// scanFileStatsChunk 是 scanFileStats 的可参数化版本。
+//
+// chunkSize 存在的唯一目的是**测试**：把块切到 1/2/3/5 字节，跨块边界的
+// 情形就被穷举了，不再依赖"夹具要够大"这种隐式前提。历史上这里就是
+// 因为夹具只有 15000 字节（小于 32KB 块）而漏掉过一个真 bug。
+func scanFileStatsChunk(path string, probeBinary bool, chunkSize int) (lineCount int, isBinary bool, tokens int, err error) {
+	if chunkSize <= 0 {
+		chunkSize = scanChunkSize
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return 0, false, 0, err
 	}
 	defer f.Close()
 
-	// 缓冲区必须 >= binaryProbeSize：bufio.Peek(n) 在 n 超过内部缓冲时
-	// 直接返回 ErrBufferFull（与文件实际大小无关），8000 字节的探测窗口
-	// 配上默认 4096 的缓冲会让所有非白名单文本文件变成"Read error"。
-	reader := bufio.NewReaderSize(f, 32*1024)
+	reader := bufio.NewReaderSize(f, chunkSize)
 
-	// 数行 / 估算 token / 校验文本三件事共用这一遍读取（不额外读盘）
+	// 数行 / 估算 token / 校验文本三件事共用这一遍读取（不额外读盘）。
+	//
+	// carry 存的是上一块末尾那几个"不完整的多字节字符"的字节，本块开头
+	// 必须先把它们拼回来再校验，否则块边界上的汉字会被当成非法 UTF-8。
+	// 这里曾经写成 append(scan[:carryLen], chunk...)——切出来的是旧缓冲区
+	// 的**开头**几个字节，carry 的内容从未被拼回，导致任何跨 32KB 边界且
+	// 含中文的文件被整文件判成 Binary（纯汉字碰巧能凑成合法字符而幸存）。
 	var carry [4]byte
 	carryLen := 0
-	scan := make([]byte, 0, 32*1024+4) // 复用底层数组，避免每块分配
-	buf := make([]byte, 32*1024)
+	scan := make([]byte, 0, chunkSize+4) // 复用底层数组，避免每块分配
+	buf := make([]byte, chunkSize)
 	for {
 		n, rerr := reader.Read(buf)
 		if n > 0 {
@@ -1055,7 +1073,8 @@ func scanFileStats(path string, probeBinary bool) (lineCount int, isBinary bool,
 			tokens += countTokensBuffer(chunk)
 
 			if probeBinary && !isBinary {
-				scan = append(scan[:carryLen], chunk...)
+				scan = append(scan[:0], carry[:carryLen]...)
+				scan = append(scan, chunk...)
 				if bytes.IndexByte(scan, 0) >= 0 {
 					isBinary = true
 				} else {
