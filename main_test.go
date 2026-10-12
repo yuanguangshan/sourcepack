@@ -31,7 +31,7 @@ func TestMatchPattern(t *testing.T) {
 		// Path-based patterns (contain /)
 		{"src/main.go", "src/*.go", true},
 		{"src/main.go", "pkg/*.go", false},
-		{"src/sub/main.go", "src/*.go", false}, // filepath.Match does not match nested
+		{"src/sub/main.go", "src/*.go", false}, // "*" 不跨过 "/"（必须用 path.Match：filepath.Match 在 Windows 上会匹配）
 	}
 
 	for _, tt := range tests {

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
@@ -357,12 +358,16 @@ func matchWithStarStar(pattern, path string) bool {
 
 // matchPattern is a simpler glob match used for AdditionalIgnores and some tests.
 // Patterns without a path separator match against basename.
-func matchPattern(path, pattern string) bool {
+func matchPattern(filePath, pattern string) bool {
+	// 用 path.Match（分隔符固定为 "/"）而不是 filepath.Match：调用方传入的
+	// 路径已经过 filepath.ToSlash 归一，而 filepath.Match 在 Windows 上把
+	// "\\" 当分隔符、把 "/" 当普通字符，于是 "*" 会跨过 "/" ——
+	// src/*.go 会错误匹配 src/sub/main.go（-I/-x/-X 在 Windows 上过度排除）。
 	if !strings.ContainsAny(pattern, "/\\") {
-		m, _ := filepath.Match(pattern, filepath.Base(path))
+		m, _ := path.Match(pattern, path.Base(filePath))
 		return m
 	}
-	m, _ := filepath.Match(pattern, path)
+	m, _ := path.Match(pattern, filePath)
 	return m
 }
 
