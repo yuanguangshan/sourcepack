@@ -36,7 +36,7 @@ git config user.name Lab
 | :--- | :--- | :--- |
 | [01](01-history-and-philosophy.md) | 起源与设计哲学 | Git 为什么长这样？快照、内容寻址、三棵树 |
 | [02](02-object-model.md) | 对象模型 | blob/tree/commit/tag 到底是什么字节？哈希怎么算的 |
-| 03 | 引用、HEAD 与 reflog | 分支只是 41 字节的文件；"提交丢了"是怎么回事 |
+| [03](03-refs-head-reflog.md) | 引用、HEAD 与 reflog | 分支只是 41 字节的文件；"提交丢了"是怎么回事 |
 | 04 | 索引（暂存区） | `add` 到底做了什么？staged/unstaged 的真实含义 |
 | 05 | 提交图与分支合并 | 父子链、merge 的两条父边、fast-forward、merge-base |
 | 06 | diff 算法与 patch 格式 | Myers 算法、unified diff 头、`a/` `b/` 前缀与重命名检测 |
@@ -67,4 +67,15 @@ git config user.name Lab
 | :--- | :--- |
 | 01 起源与设计哲学 | ✅ 已完成 |
 | 02 对象模型 | ✅ 已完成 |
-| 03–12 | 待续 |
+| 03 引用、HEAD 与 reflog | ✅ 已完成 |
+| 04–12 | 待续 |
+
+---
+
+## 各章要点（便于回看）
+
+| 章 | 一句话要点 |
+| :--- | :--- |
+| 01 | Git 存**快照**而不是差异；键是**内容哈希**；内部只有对象库/引用/索引三块 |
+| 02 | 对象哈希 = `类型 长度\0内容` 的 SHA-1（可用 Python 复现）；blob 不含文件名所以重命名免费；空树 `4b825dc...` 是普适常量 |
+| 03 | 引用就是装着哈希的文件（41 字节）；HEAD 是符号引用；**reflog 能救回 `reset --hard` 丢掉的提交** |
