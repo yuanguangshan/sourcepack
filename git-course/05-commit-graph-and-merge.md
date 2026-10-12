@@ -258,14 +258,18 @@ $ git log -1 --oneline $(git merge-base main5 feat5)
 
 ### 5.8.1 合并提交的 diff 取第一父
 
-源码（`changeset.go` 附近，配合 `-G` 的逐提交遍历）：
+源码（`changeset.go:496-499`，`-G` 的逐提交遍历里）：
 
 ```go
+	for _, grp := range groups {
 		base := emptyTreeSHA
 		if len(grp.Parents) > 0 {
 			base = grp.Parents[0]        // ← 合并提交取第一父
 		}
 ```
+
+（`grp.Parents` 来自 `git log --format=%P`；根提交没有父，于是回落到空树——
+第 2 章那个常量在这里第三次出场。）
 
 **实测产物里的标注**（在实验室仓库跑 `gx -G 3`）：
 
