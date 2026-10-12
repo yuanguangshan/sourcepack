@@ -450,6 +450,19 @@ func validateConfig(c Config, fs *pflag.FlagSet) error {
 	if c.MaxDiffLines < 0 {
 		return fmt.Errorf("--max-diff-lines must be >= 0")
 	}
+	// -d 指向不存在或不是目录的路径时明确报错。
+	// 原来会"成功"生成一份空快照（exit 0、产物里只有一个树根）——路径打错
+	// 一个字母，用户以为已经打包好了，喂给模型才发现内容为空。
+	// 与上面几条同样的哲学：宁可明确报错，也不要静默给出错误结果。
+	if c.RootDir != "" {
+		fi, err := os.Stat(c.RootDir)
+		if err != nil {
+			return fmt.Errorf("-d/--dir is not accessible: %s", c.RootDir)
+		}
+		if !fi.IsDir() {
+			return fmt.Errorf("-d/--dir must be a directory, but %s is a file", c.RootDir)
+		}
+	}
 	if fs.Changed("no-subdirs") && c.gitMode() {
 		return fmt.Errorf("-n/--no-subdirs has no effect in git mode; use -m/--match or -d <subdir> instead")
 	}

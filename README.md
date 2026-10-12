@@ -2,6 +2,8 @@
 
 **一键将项目代码库转换为 AI 可读的 Markdown 快照。**
 
+> 📖 全部参数的详细说明与实测示例见 **[PARAMETERS.md](PARAMETERS.md)**（参数手册）。
+
 Sourcepack 是一个极简、高性能的工具，用于扫描项目目录并将代码合并为单个 Markdown 文件，方便你快速喂给 LLM (GPT/Claude) 或进行代码审计。
 
 ## 安装

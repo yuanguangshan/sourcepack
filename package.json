@@ -22,6 +22,7 @@
     "index.js",
     "download-binary.js",
     "README.md",
+    "PARAMETERS.md",
     "TODO.md"
   ],
   "repository": {

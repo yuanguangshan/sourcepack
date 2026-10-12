@@ -395,6 +395,30 @@ func TestValidateConfigOutputDestinations(t *testing.T) {
 	}
 }
 
+// -d 打错路径不能"成功产出空快照"：必须明确报错。
+func TestValidateConfigRejectsBadRootDir(t *testing.T) {
+	fs := newTestFlagSet()
+	c := parseFlagsInto(fs, []string{"-d", "/nope/nope-does-not-exist"})
+	if err := validateConfig(c, fs); err == nil || !strings.Contains(err.Error(), "not accessible") {
+		t.Errorf("不存在的目录应报错，实际 %v", err)
+	}
+
+	dir := t.TempDir()
+	file := filepath.Join(dir, "a.go")
+	mustWrite(t, file, "package main\n")
+	fs2 := newTestFlagSet()
+	c2 := parseFlagsInto(fs2, []string{"-d", file})
+	if err := validateConfig(c2, fs2); err == nil || !strings.Contains(err.Error(), "must be a directory") {
+		t.Errorf("指向文件应报错，实际 %v", err)
+	}
+
+	// 正常目录不受影响
+	fs3 := newTestFlagSet()
+	if err := validateConfig(parseFlagsInto(fs3, []string{"-d", dir}), fs3); err != nil {
+		t.Errorf("正常目录不该报错: %v", err)
+	}
+}
+
 // diff 头部的 a/ 与 b/ 前缀只能各剥一层：仓库里真实存在 b/ 目录时，
 // 连着剥两层会把 --- a/b/x.go 变成 x.go，diff 贴不上变更还会冒出幽灵条目。
 func TestParseDiffPathStripsOnlyMatchingPrefix(t *testing.T) {
