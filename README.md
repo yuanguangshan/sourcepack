@@ -3,6 +3,8 @@
 **一键将项目代码库转换为 AI 可读的 Markdown 快照。**
 
 > 📖 全部参数的详细说明与实测示例见 **[PARAMETERS.md](PARAMETERS.md)**（参数手册）。
+>
+> 🎓 想深入 Git？本仓库附带一套 12 章的 **[Git 深入课](git-course/README.md)**——以本项目为标本，从对象模型、索引、提交图讲到性能与发布链路，每章都附本机实测输出与动手实验（[博客版](git-course/published-urls.md)）。
 
 Sourcepack 是一个极简、高性能的工具，用于扫描项目目录并将代码合并为单个 Markdown 文件，方便你快速喂给 LLM (GPT/Claude) 或进行代码审计。
 
