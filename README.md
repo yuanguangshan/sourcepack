@@ -797,3 +797,81 @@ v1.8.0 是"打 tag 直接构建发布"放出去的，当天暴露三个线上可
 
 结构上顺带把"什么会被排除"整块从 `main.go` 搬到 `ignore.go`：
 `main.go` 1798 → 1487 行。
+
+---
+
+## 新增记录（2026-10-12 · v2.0.0）
+
+主版本号 +1 的原因只有一条：**`-d` 的行为变了**——原先"静默成功"的输入现在会明确报错。
+
+### 1. `-d` 指向非法路径改为明确报错（**行为变更**）
+
+v1.9.0 及之前，`gx -d /nope/nope`（路径打错）或 `gx -d main.go`（指向文件）
+会**成功**产出一份空快照：
+
+```bash
+$ gx -d /nope/nope -o /tmp/nodir.md ; echo $?
+0                                   # ← 退出码 0，产物 185 字节，树里只有一个 "nope/"
+```
+
+用户会以为打包成功，直到把产物喂给模型才发现里面什么都没有。v2.0.0 起：
+
+| 输入 | 结果 |
+| :--- | :--- |
+| `-d /nope/nope` | `❌ -d/--dir is not accessible: /nope/nope`，退出码 1 |
+| `-d main.go` | `❌ -d/--dir must be a directory, but main.go is a file`，退出码 1 |
+| 正常目录 | 不受影响 |
+
+**受影响的用法**：脚本里若依赖"目录不存在也照样产出一份空文件"，升级后会失败——
+这正是本次跳主版本的原因。
+
+### 2. `-h` 里新增 Examples 示例段
+
+常用的组合直接可抄，按五组划分（打包整个项目 / 只打包一部分 / 先看会打包什么 /
+交给 AI 审查改动 / 分享投喂），并在末尾指向参数手册：
+
+```bash
+$ gx -h
+...
+Examples:
+  # 打包整个项目（生成 project_snapshot.md）
+  sourcepack
+
+  # 只打包一部分
+  sourcepack -d src -i go             只扫 src 下的 .go（-i 可逗号分隔、大小写不敏感）
+  sourcepack -m handler -x test       路径含 handler，且扩展名不是 test
+  sourcepack -I '**/*.log'            按 gitignore 语法排除日志（支持 ** 与 !）
+  sourcepack -n                      只扫根目录，不进子目录
+
+  # 先看会打包什么、有多大（都不写文件）
+  sourcepack --dry-run                列出将被包含的文件清单
+  sourcepack -s                       只打印统计与 token 估算
+
+  # 交给 AI 审查「这次改了什么」
+  sourcepack -g                       未提交改动（diff + 变更后全文）
+  sourcepack -g --staged              只看已暂存的改动
+  sourcepack -g --diff-only           只给 diff，不附全文（产物小十几倍）
+  sourcepack -g --rev main            与 main 分支比较
+  sourcepack -G 5 --no-merges         最近 5 个非合并提交
+
+  # 分享 / 投喂
+  sourcepack -o /tmp/snap.md          写到指定路径（建议写在项目外，避免自我污染）
+  sourcepack -c                       复制到剪贴板
+  sourcepack --icloud                 存到 iCloud Drive（手机可读）
+  sourcepack -p -u https://host/submit  推送到远端（或用 SOURCEPACK_PUSH_URL）
+
+完整参数说明与实测示例：见仓库里的 PARAMETERS.md
+```
+
+示例里的命令名跟随实际调用的名字，npm 全局安装后用 `gx -h` 也不会出现
+`sourcepack-darwin-arm64` 这种内部二进制名。
+
+### 3. 新增参数手册 [PARAMETERS.md](PARAMETERS.md)
+
+29 个参数逐一实测（含真机输出）、忽略规则语法表与优先级、组合互斥、退出码表、
+边界与已知问题、实测夹具附录。README 顶部加入口，同时打进 npm 包。
+
+### 4. 其它
+
+- 新增 `-h` 示例段的回归测试（`TestHelpContainsExamples`）；
+- `-d` 校验的回归测试（`TestValidateConfigRejectsBadRootDir`）。

@@ -226,6 +226,30 @@ func TestCountTokensBuffer(t *testing.T) {
 	}
 }
 
+// -h 必须带可复制的示例（用户要求：示例能直接在 help 里查到）。
+func TestHelpContainsExamples(t *testing.T) {
+	var buf bytes.Buffer
+	printUsage(&buf, newTestFlagSet())
+	out := buf.String()
+	for _, want := range []string{
+		"Examples:",
+		"# 打包整个项目",
+		"# 只打包一部分",
+		"# 先看会打包什么、有多大",
+		"# 交给 AI 审查",
+		"# 分享 / 投喂",
+		"PARAMETERS.md",
+		"-g --diff-only",
+		"-G 5 --no-merges",
+		"-I '**/*.log'",
+		"SOURCEPACK_PUSH_URL",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("-h 输出缺少 %q", want)
+		}
+	}
+}
+
 // 分块读取时末尾可能截在多字节字符中间，那不是"内容非法"。
 func TestIncompleteUTF8Tail(t *testing.T) {
 	cases := []struct {

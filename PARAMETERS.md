@@ -1,7 +1,9 @@
 # Sourcepack 参数手册
 
 > **本文所有示例都来自真机实测输出**，不是从代码推断的。
-> 实测环境：macOS（Apple Silicon）、sourcepack **v1.9.0**；
+> 实测环境：macOS（Apple Silicon）、sourcepack **v1.9.0**。
+> **v2.0.0 与它的差异只有两处**：`-d` 指向非法路径改为明确报错（见第 2 节），
+> 以及 `-h` 里新增了「Examples」示例段——参数行为本身没有变化。
 > 夹具见 [附录 A](#附录-a实测夹具)，可复现。
 > 生成产物的路径全部写在 `/tmp`，避免产物反过来污染夹具。
 
@@ -97,8 +99,9 @@ $ gx -g -d src --dry-run
 🔍 Files to be included (1):
 ```
 
-> **坑（已修，见 [第 10 节](#10-边界坑与已知问题)）**：v1.9.0 里 `-d` 给一个不存在的路径
-> 会**成功**产出一份空快照（exit 0）。当前 main 已改为明确报错。
+> **坑（v2.0.0 起已修，见 [第 10 节](#10-边界坑与已知问题)）**：v1.9.0 里 `-d`
+> 给一个不存在的路径（或一个文件）会**成功**产出一份空快照（exit 0）。
+> v2.0.0 起明确报错并退出码 1。
 
 ### `-i, --include` / `-x, --exclude` —— 按扩展名
 
@@ -530,6 +533,32 @@ Environment variables:
 （可以 `gx -h | less`），且包含 `Convenience shortcuts` / `Combinations` /
 `Environment variables` 三段（v1.8.0 曾整段丢失，v1.8.1 修复）。
 
+**v2.0.0 起 `-h` 里多了「Examples」示例段**，常用组合可以直接抄：
+
+```
+Examples:
+  # 打包整个项目（生成 project_snapshot.md）
+  sourcepack
+
+  # 只打包一部分
+  sourcepack -d src -i go             只扫 src 下的 .go（-i 可逗号分隔、大小写不敏感）
+  sourcepack -m handler -x test       路径含 handler，且扩展名不是 test
+  sourcepack -I '**/*.log'            按 gitignore 语法排除日志（支持 ** 与 !）
+  sourcepack -n                      只扫根目录，不进子目录
+
+  # 先看会打包什么、有多大（都不写文件）
+  sourcepack --dry-run                列出将被包含的文件清单
+  sourcepack -s                       只打印统计与 token 估算
+
+  # 交给 AI 审查「这次改了什么」
+  sourcepack -g                       未提交改动（diff + 变更后全文）
+  ...
+```
+
+示例里的命令名会跟着**实际调用的名字**变：npm 全局安装后用 `gx -h`，
+示例显示的就是 `sourcepack`（平台二进制名会被归一），不会出现
+`sourcepack-darwin-arm64` 这种内部名字。
+
 ---
 
 ## 7. 忽略规则（gitignore 语法）
@@ -605,7 +634,7 @@ $ gx -p -d .                # → 退出码 1，❌ SOURCEPACK_PUSH_URL env is r
 
 ### 已修复（在 main，尚未发版）
 
-**`-d` 指向不存在路径或文件时静默成功**。v1.9.0 实测：
+**`-d` 指向不存在路径或文件时静默成功**（v2.0.0 已修）。v1.9.0 实测：
 
 ```bash
 $ gx -d /nope/nope -o /tmp/nodir.md ; echo $?
@@ -617,9 +646,9 @@ $ head -6 /tmp/nodir.md
 nope/
 ```
 
-路径打错一个字母，用户会以为打包成功，喂给模型才发现是空的。已在 `validateConfig`
-加上校验：不存在的路径报 `-d/--dir is not accessible`，指向文件报
-`-d/--dir must be a directory`（均退出码 1）。
+路径打错一个字母，用户会以为打包成功，喂给模型才发现是空的。v2.0.0 起
+`validateConfig` 会明确拒绝：不存在的路径报 `-d/--dir is not accessible`，
+指向文件报 `-d/--dir must be a directory`（均退出码 1）。
 
 ### 已知问题（未修）
 

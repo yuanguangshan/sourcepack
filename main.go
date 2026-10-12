@@ -299,6 +299,39 @@ func printUsage(w io.Writer, fs *pflag.FlagSet) {
 	fmt.Fprintf(w, "\nEnvironment variables:\n")
 	fmt.Fprintf(w, "  SOURCEPACK_PUSH_URL    Remote URL for push (e.g. https://host/submit)\n")
 	fmt.Fprintf(w, "  SOURCEPACK_AUTH_KEY    X-Auth-Key for push authentication\n")
+
+	// 示例直接用"实际被调用的程序名"，这样 npm 全局安装后（gx / gdoc）
+	// 看到的就是自己敲的命令，而不是硬编码的 sourcepack。
+	cmd := programName()
+	fmt.Fprintf(w, "\nExamples:\n")
+	fmt.Fprintf(w, "  # 打包整个项目（生成 project_snapshot.md）\n")
+	fmt.Fprintf(w, "  %s\n", cmd)
+
+	fmt.Fprintf(w, "\n  # 只打包一部分\n")
+	fmt.Fprintf(w, "  %s -d src -i go             只扫 src 下的 .go（-i 可逗号分隔、大小写不敏感）\n", cmd)
+	fmt.Fprintf(w, "  %s -m handler -x test       路径含 handler，且扩展名不是 test\n", cmd)
+	fmt.Fprintf(w, "  %s -I '**/*.log'            按 gitignore 语法排除日志（支持 ** 与 !）\n", cmd)
+	fmt.Fprintf(w, "  %s -n                      只扫根目录，不进子目录\n", cmd)
+
+	fmt.Fprintf(w, "\n  # 先看会打包什么、有多大（都不写文件）\n")
+	fmt.Fprintf(w, "  %s --dry-run                列出将被包含的文件清单\n", cmd)
+	fmt.Fprintf(w, "  %s -s                       只打印统计与 token 估算\n", cmd)
+
+	fmt.Fprintf(w, "\n  # 交给 AI 审查「这次改了什么」\n")
+	fmt.Fprintf(w, "  %s -g                       未提交改动（diff + 变更后全文）\n", cmd)
+	fmt.Fprintf(w, "  %s -g --staged              只看已暂存的改动\n", cmd)
+	fmt.Fprintf(w, "  %s -g --diff-only           只给 diff，不附全文（产物小十几倍）\n", cmd)
+	fmt.Fprintf(w, "  %s -g --rev main            与 main 分支比较\n", cmd)
+	fmt.Fprintf(w, "  %s -G 5 --no-merges         最近 5 个非合并提交\n", cmd)
+
+	fmt.Fprintf(w, "\n  # 分享 / 投喂\n")
+	fmt.Fprintf(w, "  %s -o /tmp/snap.md          写到指定路径（建议写在项目外，避免自我污染）\n", cmd)
+	fmt.Fprintf(w, "  %s -c                       复制到剪贴板\n", cmd)
+	fmt.Fprintf(w, "  %s --icloud                 存到 iCloud Drive（手机可读）\n", cmd)
+	fmt.Fprintf(w, "  %s -p -u https://host/submit  推送到远端（或用 SOURCEPACK_PUSH_URL）\n", cmd)
+
+	fmt.Fprintf(w, "\n完整参数说明与实测示例：见仓库里的 PARAMETERS.md\n")
+	fmt.Fprintf(w, "  https://github.com/yuanguangshan/sourcepack/blob/main/PARAMETERS.md\n")
 }
 
 // programName 用法说明里的程序名。
