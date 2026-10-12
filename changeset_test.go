@@ -249,8 +249,14 @@ func TestFormatHelpers(t *testing.T) {
 	if got := mdCode("a b.go"); got != "`a b.go`" {
 		t.Errorf("mdCode 普通路径 = %q", got)
 	}
-	if got := mdCode("we`ird"); got != "we`ird" {
-		t.Errorf("mdCode 含反引号应原样返回，实际 %q", got)
+	// 含反引号的路径不能用单反引号内联（Markdown 里反引号无法转义），
+	// 但也不能直接返回原文——那样 ** _ | 会被渲染成加粗/斜体/表格分隔。
+	// 现在统一转成 HTML 实体：渲染结果仍是原样字符，结构不被破坏。
+	if got := mdCode("we`ird"); got != "we&#96;ird" {
+		t.Errorf("mdCode 含反引号应转成 HTML 实体，实际 %q", got)
+	}
+	if got := mdCode("a`b**c_d|e"); strings.ContainsAny(got, "*_|") {
+		t.Errorf("含反引号的路径里不该残留未转义的 Markdown 元字符，实际 %q", got)
 	}
 	if got := mdCell("a|b\nc"); got != `a\|b c` {
 		t.Errorf("mdCell = %q", got)
@@ -330,6 +336,8 @@ func TestValidateConfigCombinations(t *testing.T) {
 		{[]string{"--max-diff-lines", "10"}, "--max-diff-lines only applies"},
 		{[]string{"-g", "--max-diff-lines", "-1"}, "must be >= 0"},
 		{[]string{"-g", "-n"}, "--no-subdirs has no effect"},
+		{[]string{"--base", "main"}, "--base only applies"},
+		{[]string{"-g", "--base", "main", "--rev", "HEAD~1"}, "mutually exclusive"},
 	}
 	for _, tc := range cases {
 		fs := newTestFlagSet()
@@ -348,6 +356,7 @@ func TestValidateConfigCombinations(t *testing.T) {
 	for _, args := range [][]string{
 		{"-g"}, {"-g", "--staged"}, {"-g", "--rev", "HEAD~1"}, {"-G", "5", "--no-merges"},
 		{"-G", "5", "--diff-only"}, {"-g", "--max-diff-lines", "0"},
+		{"-g", "--base", "main"},
 	} {
 		fs := newTestFlagSet()
 		if err := validateConfig(parseFlagsInto(fs, args), fs); err != nil {
@@ -478,6 +487,63 @@ func TestScanDirectoryReportsIgnoredDirs(t *testing.T) {
 	}
 	if len(skipped) != 0 {
 		t.Errorf("目录级跳过不进 skipped 列表，实际 %d 条", len(skipped))
+	}
+}
+
+// --base：按"共同祖先"比较（PR 审查口径），而不是直接和对方分支尖端比较。
+//
+// 关键差异：对方分支前进过之后，--rev <branch> 会把**对方的改动**反向算进来
+// （实测多出 1 个文件、多算 1 行删除），--base 只算"我这条分支自己的改动"。
+func TestGitBaseUsesMergeBase(t *testing.T) {
+	dir := newGitFixture(t)
+	writeFile(t, dir, "shared.txt", "shared\n")
+	writeFile(t, dir, "base.txt", "base\n")
+	gitIn(t, dir, "add", "-A")
+	gitIn(t, dir, "commit", "-q", "-m", "base")
+
+	// main 侧前进
+	gitIn(t, dir, "checkout", "-q", "-b", "mainline")
+	writeFile(t, dir, "mainonly.txt", "main-only\n")
+	writeFile(t, dir, "shared.txt", "shared main\n")
+	gitIn(t, dir, "add", "-A")
+	gitIn(t, dir, "commit", "-q", "-m", "main: 自己的改动")
+
+	// 从共同祖先拉出特性分支，也前进
+	gitIn(t, dir, "checkout", "-q", "-b", "feature", "HEAD~1")
+	writeFile(t, dir, "featonly.txt", "feat-only\n")
+	writeFile(t, dir, "shared.txt", "shared feat\n")
+	gitIn(t, dir, "add", "-A")
+	gitIn(t, dir, "commit", "-q", "-m", "feature: 我的改动")
+
+	// --base：只有 feature 自己的改动
+	cfgBase := parseFlagsInto(newTestFlagSet(), []string{"-d", dir, "-g", "--base", "mainline"})
+	csBase, _, _, _ := collectForTest(t, cfgBase)
+	filesBase := map[string]bool{}
+	for _, ch := range csBase.Commits[0].Changes {
+		filesBase[ch.Path] = true
+	}
+	// 期望：feature 自己的两个改动都在（新增 featonly.txt、修改 shared.txt），
+	// 但**不含** main 侧的 mainonly.txt（那正是"反向算进来"的错误来源）。
+	if !filesBase["featonly.txt"] || !filesBase["shared.txt"] {
+		t.Errorf("--base 应包含 feature 自己的改动，实际: %v", filesBase)
+	}
+	if filesBase["mainonly.txt"] {
+		t.Errorf("--base 不该把 main 侧新增的 mainonly.txt 算进来（那是 --rev 的行为），实际: %v", filesBase)
+	}
+	if !strings.Contains(csBase.Spec, "merge-base with mainline") {
+		t.Errorf("Source 行应标注基准来自 merge-base，实际: %s", csBase.Spec)
+	}
+
+	// --rev：直接和对方尖端比较，会把 mainonly.txt 也算成"删除"
+	cfgRev := parseFlagsInto(newTestFlagSet(), []string{"-d", dir, "-g", "--rev", "mainline"})
+	csRev, _, _, _ := collectForTest(t, cfgRev)
+	filesRev := map[string]bool{}
+	for _, ch := range csRev.Commits[0].Changes {
+		filesRev[ch.Path] = true
+	}
+	// name-status 里应能看到 mainonly.txt 被当成删除（这正是坑）
+	if !filesRev["mainonly.txt"] {
+		t.Logf("注意：--rev 的结果为 %v（不同 git 版本可能不把对方新增文件列为 D）", filesRev)
 	}
 }
 

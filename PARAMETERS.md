@@ -46,6 +46,8 @@
 | :--- | :--- | :--- |
 | `-g, --git-diff` | false | 打包未提交改动（工作树+索引 vs `--rev`） |
 | `--rev` | `HEAD` | `-g` 的比较基准（任意 revspec） |
+| `--base` | — | `-g` 时与**共同祖先**比较（`merge-base(base, HEAD)`），PR 审查口径 |
+| `--first-parent` | false | `-G` 时只看主线（`git log --first-parent`） |
 | `--staged` | false | 只打包已暂存改动（`git diff --cached`） |
 | `-G, --commits` | 0 | 打包最近 N 个提交 |
 | `--no-merges` | false | `-G` 时排除合并提交 |
@@ -313,8 +315,10 @@ macOS 用 `pbcopy`，Linux 用 `xclip` 或 `xsel`（都没有则报错），Wind
 > **实测注意**：在本沙箱环境里 `pbpaste` 读回为空。已用"拦截式假 pbcopy"证明
 > **工具确实把正确字节送给了 pbcopy**（263 字节、内容正确）；同一沙箱下
 > `cat <含非 ASCII 的文件> | pbcopy` 同样读回 0 字节，而纯 ASCII 负载正常——
-> 即**环境本身的限制**，与本工具无关。另外代码里 `cmd.Wait()` 的错误被丢弃
-> （见 [第 10 节](#10-边界坑与已知问题)），pbcopy 真失败时会误报成功。
+> 即**环境本身的限制**，与本工具无关。
+>
+> 另外：`cmd.Wait()` 的错误**曾经被丢弃**（pbcopy 真失败时会误报"已复制"），
+> **已修复**——现在剪贴板命令退出码非 0 会报错，不再打印 `✨ Done!`。
 
 ### `--icloud` —— 存到 iCloud Drive
 
@@ -325,6 +329,14 @@ $ gx -d . --icloud
 
 **实测**：文件名 = `<目录名>+<日期>.md`，落在 iCloud Drive 的 `Documents` 下（手机可读）。
 `--icloud` 与 `-o` 同时给时 `--icloud` 优先（`-o` 指定的文件不会生成）。
+
+**平台约束**（实测）：
+
+- `--icloud` **只在 macOS 上可用**；在 Linux/Windows 上会明确报错并建议改用 `-o`。
+  （旧实现会在任何平台 `MkdirAll` 出 `~/Library/Mobile Documents/...`，
+  于是"成功"写进一棵假目录树，用户以为已经同步到手机了。）
+- 即使 macOS，**iCloud Drive 未启用时也会报错**而不是自建目录——因为那个容器
+  只能由系统创建。
 
 ---
 
@@ -395,6 +407,36 @@ $ gx -g --rev HEAD~1 --dry-run -d .
 
 **实测**：接受任意 revspec（`HEAD~1`、分支名、commit sha）。不给 `-g` 而单独用
 `--rev` 会明确报错。
+
+### `--base` —— 与"共同祖先"比较（PR 审查口径）
+
+```bash
+$ gx -g --base main --dry-run -d .
+📦 Git changes: git diff 3c05a55...  (working tree + index vs 3c05a55...) (merge-base with main)
+  Files changed:       2 (+2 −1)
+```
+
+**为什么需要它**：`--rev main` 是**双点语义**——直接拿 main 的尖端比。
+如果 main 在你分叉之后也前进过，它会把**对方的改动反向算进来**：
+
+| 口径 | Files changed | 文件清单 |
+| :--- | ---: | :--- |
+| `--rev main`（双点） | **3 (+2 −2)** | 多出 `mainonly.txt`（被当成"删除"，其实是对方新增的） |
+| `--base main`（merge-base） | **2 (+2 −1)** | 只有自己分支的改动 |
+
+两者与 git 真值逐条一致：`git diff main` = 3 个文件、`git diff main...HEAD` = 2 个文件。
+
+> 审查自己的分支用 `--base`；只想看"和某个提交的差异"用 `--rev`。
+> 两者**互斥**（同时给会报错，避免产物口径不明）。
+
+### `--first-parent` —— `-G` 时只看主线
+
+```bash
+$ gx -G 5 --first-parent --dry-run -d .
+📦 Git changes: git log -5 --first-parent
+```
+
+适合"这条主干推进了哪些点"的视角：特性分支上的中间提交会被折叠。
 
 ### `--staged` —— 只看已暂存
 
@@ -656,7 +698,7 @@ nope/
 
 | 问题 | 影响 | 说明 |
 | :--- | :--- | :--- |
-| `-c` 失败时误报成功 | 剪贴板没拿到内容，终端却说 `✨ Done! Copied to clipboard` | 代码里 `cmd.Wait()` 的错误被丢弃。实测本沙箱的失败是 pbcopy 环境限制（pbcopy 退出码 0），即使检查错误也拦不住；但真失败（如 Linux 无 xclip 已单独报错）值得一并处理 |
+| ~~`-c` 失败时误报成功~~ | ~~剪贴板没拿到内容，终端却说已复制~~ | **已修复**：`cmd.Wait()` 的错误不再丢弃，剪贴板命令失败时返回错误（附回归用例） |
 | 非 UTF-8 文本（GBK 等）按二进制丢弃 | 老项目源码会整文件消失，只显示 `[Binary file]` | 为守住"产物永远是合法 UTF-8"的不变量；可改进为区分 `Non-UTF-8 text` 与 `Binary`，或做转码 |
 | 默认忽略目录较激进 | `pkg/cache/`、`scripts/release/`、`bin/`、`logs/` 等按目录名任意深度跳过 | 这些目录里若放着真代码会被跳过；`-s` 的 `Ignored dirs` 会列出来，可用 `--no-default-ignore` 关闭 |
 | 敏感文件只按文件名判断 | 写在 `config.go`、`docker-compose.yml` 里的 token 不会被拦 | `-p` 推送源码前请自行确认 |
@@ -666,7 +708,8 @@ nope/
 ### 使用坑（实测确认，非 bug）
 
 - `--max-size 0` ≠ 不限（只剩空文件）；`--max-diff-lines 0` = 不限。两者语义相反。
-- `-X` 是子串不是 glob：`-X '*.go'` 什么都不排除。
+- `-X` 是子串不是 glob：`-X '*.go'` 什么都不排除（**现在会给一行提示**，
+  按扩展名排除请用 `-x go`）。
 - `--no-default-ignore` / `-a` 会把 `.git/` 内部文件一起打包。
 - 产物文件自我排除只针对 `-o` 指定的那一个；其它 .md 产物会进快照。
 - `-d <子目录>` 时产物内路径是相对该子目录的，不是相对仓库根。

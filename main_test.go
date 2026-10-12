@@ -2,9 +2,12 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -446,6 +449,53 @@ func TestGenerateAnchor(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("generateAnchor(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+// 剪贴板工具失败时必须报错，而不是照旧打印"已复制"。
+// 做法：把 PATH 前面塞一个必定失败（退出码 3）的 pbcopy 假命令。
+// 这条修复对应 README 里记录过的已知问题："cmd.Wait() 的错误被丢弃"。
+// --icloud 只在 macOS 且 iCloud 容器存在时工作；
+// 不能在别的平台凭空造出 ~/Library/Mobile Documents/... 目录树。
+func TestICloudRequiresDarwinAndExistingContainer(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "a.go"), "package a\n")
+	cfg := Config{RootDir: root, OutputFile: "out.md", MaxFileSize: 500 * 1024}
+	files, stats, _ := scanDirectory(cfg)
+
+	err := saveToICloud(cfg, files, stats, time.Now())
+	if runtime.GOOS == "darwin" {
+		// 本机若真的启用了 iCloud Drive，则应当成功；否则必须是"找不到目录"的报错，
+		// 而不是悄悄创建（因此断言：报错文本必须提到 iCloud Drive 或成功返回 nil）
+		if err != nil && !strings.Contains(err.Error(), "iCloud Drive") {
+			t.Errorf("macOS 上的失败应当是明确的 iCloud Drive 提示，实际: %v", err)
+		}
+		return
+	}
+	if err == nil {
+		t.Fatal("非 macOS 上 --icloud 应当报错")
+	}
+	if !strings.Contains(err.Error(), "requires macOS") {
+		t.Errorf("错误信息应说明需要 macOS，实际: %v", err)
+	}
+}
+
+func TestClipboardSurfacesCommandFailure(t *testing.T) {
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "pbcopy")
+	mustWrite(t, fake, "#!/bin/sh\nexit 3\n")
+	if err := os.Chmod(fake, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "a.go"), "package a\n")
+	cfg := Config{RootDir: root, OutputFile: "out.md", MaxFileSize: 500 * 1024}
+	files, stats, _ := scanDirectory(cfg)
+
+	if err := copyToClipboardStreaming(cfg, files, stats); err == nil {
+		t.Error("剪贴板命令退出码非 0 时应当报错，否则会误报「已复制」")
 	}
 }
 

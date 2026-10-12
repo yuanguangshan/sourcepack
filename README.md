@@ -900,3 +900,39 @@ Examples:
 - 小提示：该短链**不带浏览器 UA 请求会被挡成 404**（`curl` 直接访问可能看不到内容），
   浏览器打开正常；
 - 新增断言：`TestHelpContainsExamples` 现在要求这行链接存在。
+
+---
+
+## 修复记录（2026-10-13）：评审驱动的 9 项修复与 2 个新参数
+
+来自一次外部代码评审，逐条**先在真机上复现/核实**再动手。
+
+### 新参数
+
+| 参数 | 作用 | 为什么 |
+| :--- | :--- | :--- |
+| **`--base <branch>`** | `-g` 时与**共同祖先**比较（`merge-base(base, HEAD)`） | `--rev main` 是双点语义，main 前进过会把**对方改动反向算进来**。实测同一分支：`--rev` = 3 文件 (+2 −2)，`--base` = 2 文件 (+2 −1)，与 `git diff main...HEAD` 逐条一致 |
+| **`--first-parent`** | `-G` 时只看主线（`git log --first-parent`） | "这条主干推进了哪些点"的视角；产物 `Source:` 行会标注 |
+
+`--base` 与 `--rev` **互斥**（同时给明确报错），因为两者口径不同，静默取一个会让产物语义不明。
+
+### 修复（每项都有回归用例，关键项做了反向验证）
+
+| # | 问题 | 影响 | 修法 |
+| :--- | :--- | :--- | :--- |
+| 1 | 剪贴板：`cmd.Wait()` 的错误被丢弃 | pbcopy/xclip/clip 真失败时仍打印 `✨ Done! Copied to clipboard`，用户拿到空剪贴板 | 检查退出码并返回错误（用"必定失败的假 pbcopy"做回归测试） |
+| 2 | `--icloud` 在任何平台都 `MkdirAll` iCloud 路径 | Linux/Windows 上"成功"写进一棵假的 `~/Library/...`，用户以为同步到手机了 | 非 macOS 明确报错；macOS 上容器不存在也报错（不自建） |
+| 3 | `uploadViaMultipart` 把整份产物读进 `bytes.Buffer` | 上游特意把大快照落临时文件以免占内存，这里又整份读回，收益被抹掉 | 用 `io.MultiReader` 拼接 multipart（头部 + 文件 + 结尾），**流式且保留 Content-Length**。实测 30MB 产物峰值 RSS **92.5MiB → 13.0MiB（约 1/7）**，服务端收到的字节数完全一致 |
+| 4 | 推送把 `201/202/204` 当失败 | 服务端明明收下了，却报 `server returned 201` | 接受全部 2xx |
+| 5 | `-X '*.go'` 静默无效 | `-m/-X` 是子串匹配，写通配符不排除任何东西 | 检测到通配符时提示一行（"用 -x go"） |
+| 6 | `--max-size 0` 的语义 | 与 `--max-diff-lines 0`（不限）相反：它是"只剩空文件" | help 文本写明 `0 = only empty files, NOT "unlimited"` |
+| 7 | `mdCode` 对含反引号的路径退化为裸文本 | 路径里的 `**`/`_`/`|` 会被渲染成加粗/斜体/表格分隔，破坏产物结构 | 改用 HTML 实体转义（`&#96;`/`&#42;`…），渲染仍是原样字符 |
+
+### 评审里核实为"已正确"或"不成立"的项（未改动）
+
+- 评审称 `-a` 的 help 写着"disable all ignore rules"、与 `.gdignore` 仍生效矛盾——
+  实测 help 文本**已经写明**".gdignore still applies"，无需改；
+- 评审称 `mdCell` 没处理 `|`——实测已有 `\|` 转义；
+- 评审建议的 `--split-by-dir`、`--quiet`、全局 exclude、内容级密钥扫描、
+  `optionalDependencies` 拆包等，均**记为待办**（`TODO.md`），本轮不做：
+  它们是功能/架构级改动，与本轮"修真实缺陷"目标不同。

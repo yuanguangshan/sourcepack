@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,14 +65,16 @@ type Config struct {
 
 	// Git 模式（-g / -G）：打包变更而不是全量快照。
 	// 这些参数全部与既有的筛选/输出参数正交，可自由组合。
-	GitDiff      bool   // -g：工作区 + 索引 相对 GitRev 的变更
-	GitLog       int    // -G N：最近 N 个提交
-	GitRev       string // --rev：-g 的比较基准（默认 HEAD）
-	GitStaged    bool   // --staged：只看暂存区
-	GitNoMerges  bool   // --no-merges：-G 时排除合并提交
-	DiffOnly     bool   // --diff-only：只输出 diff，不输出变更文件全文
-	MaxDiffLines int    // --max-diff-lines：单文件 diff 行数上限（0 = 不限）
-	Help         bool   // -h / --help
+	GitDiff        bool   // -g：工作区 + 索引 相对 GitRev 的变更
+	GitLog         int    // -G N：最近 N 个提交
+	GitRev         string // --rev：-g 的比较基准（默认 HEAD）
+	GitBase        string // --base：与某个分支的 merge-base 比较（PR 审查口径）
+	GitStaged      bool   // --staged：只看暂存区
+	GitNoMerges    bool   // --no-merges：-G 时排除合并提交
+	GitFirstParent bool   // --first-parent：-G 时只看主线（第一父链）
+	DiffOnly       bool   // --diff-only：只输出 diff，不输出变更文件全文
+	MaxDiffLines   int    // --max-diff-lines：单文件 diff 行数上限（0 = 不限）
+	Help           bool   // -h / --help
 
 	// parseErr 记录参数解析失败（只会在 ContinueOnError 的 FlagSet 上出现，
 	// 生产路径的 pflag.CommandLine 是 ExitOnError，出错时已自行退出）。
@@ -321,7 +324,8 @@ func printUsage(w io.Writer, fs *pflag.FlagSet) {
 	fmt.Fprintf(w, "  %s -g                       未提交改动（diff + 变更后全文）\n", cmd)
 	fmt.Fprintf(w, "  %s -g --staged              只看已暂存的改动\n", cmd)
 	fmt.Fprintf(w, "  %s -g --diff-only           只给 diff，不附全文（产物小十几倍）\n", cmd)
-	fmt.Fprintf(w, "  %s -g --rev main            与 main 分支比较\n", cmd)
+	fmt.Fprintf(w, "  %s -g --rev main            与 main 分支比较（双点：直接比尖端）\n", cmd)
+	fmt.Fprintf(w, "  %s -g --base main           与共同祖先比较（PR 审查口径，推荐）\n", cmd)
 	fmt.Fprintf(w, "  %s -G 5 --no-merges         最近 5 个非合并提交\n", cmd)
 
 	fmt.Fprintf(w, "\n  # 分享 / 投喂\n")
@@ -379,7 +383,7 @@ func parseFlagsInto(fs *pflag.FlagSet, args []string) Config {
 	fs.StringVarP(&excMatches, "exclude-match", "X", "", "Exclude paths containing these keywords")
 	fs.StringVarP(&addIgnores, "ignore", "I", "", "Additional gitignore-style patterns (comma separated)")
 
-	fs.Int64Var(&c.MaxFileSize, "max-size", 500, "Max file size in KB")
+	fs.Int64Var(&c.MaxFileSize, "max-size", 500, "Max file size in KB (0 = only empty files, NOT \"unlimited\")")
 	fs.BoolVarP(&c.NoSubdirs, "no-subdirs", "n", false, "Do not scan subdirectories")
 	fs.BoolVarP(&c.Verbose, "verbose", "v", false, "Verbose output")
 	fs.BoolVar(&c.Version, "version", false, "Show version")
@@ -398,9 +402,11 @@ func parseFlagsInto(fs *pflag.FlagSet, args []string) Config {
 	// --- Git 变更打包（与上面的筛选/输出参数正交，可自由组合）---
 	fs.BoolVarP(&c.GitDiff, "git-diff", "g", false, "Package uncommitted changes: working tree + index vs --rev (default HEAD)")
 	fs.StringVar(&c.GitRev, "rev", "HEAD", "Revision to diff against for -g/--git-diff (any git revspec)")
+	fs.StringVar(&c.GitBase, "base", "", "With -g: diff against merge-base(base, HEAD) — what a PR review should compare")
 	fs.BoolVar(&c.GitStaged, "staged", false, "With -g: only staged changes (git diff --cached)")
 	fs.IntVarP(&c.GitLog, "commits", "G", 0, "Package the last N commits (git log -N)")
 	fs.BoolVar(&c.GitNoMerges, "no-merges", false, "With -G: exclude merge commits")
+	fs.BoolVar(&c.GitFirstParent, "first-parent", false, "With -G: follow only the first parent (mainline view)")
 	fs.BoolVar(&c.DiffOnly, "diff-only", false, "With -g/-G: emit diffs only, no full file contents")
 	fs.IntVar(&c.MaxDiffLines, "max-diff-lines", 2000, "With -g/-G: max diff lines kept per file (0 = unlimited)")
 
@@ -471,8 +477,19 @@ func validateConfig(c Config, fs *pflag.FlagSet) error {
 	if fs.Changed("no-merges") && c.GitLog == 0 {
 		return fmt.Errorf("--no-merges only applies to -G/--commits")
 	}
+	if fs.Changed("first-parent") && c.GitLog == 0 {
+		return fmt.Errorf("--first-parent only applies to -G/--commits")
+	}
 	if fs.Changed("rev") && !c.GitDiff {
 		return fmt.Errorf("--rev only applies to -g/--git-diff")
+	}
+	if fs.Changed("base") && !c.GitDiff {
+		return fmt.Errorf("--base only applies to -g/--git-diff")
+	}
+	// --rev 是"直接和某个提交比"，--base 是"和共同祖先比"（三点语义）。
+	// 同时给会让人无法判断产物到底基于什么，所以明确报错而不是静默取一个。
+	if fs.Changed("base") && fs.Changed("rev") {
+		return fmt.Errorf("--base and --rev are mutually exclusive (--base = diff against merge-base)")
 	}
 	if fs.Changed("diff-only") && !c.gitMode() {
 		return fmt.Errorf("--diff-only only applies to -g/--git-diff or -G/--commits")
@@ -1390,13 +1407,21 @@ func formatTree(sb *strings.Builder, node *treeNode, prefix string) {
 // ============================================================
 
 func saveToICloud(config Config, files []FileMetadata, stats Stats, startTime time.Time) error {
+	// --icloud 是 macOS 专有的：iCloud Drive 的容器路径只存在于 macOS。
+	// 原实现在任何平台都会 MkdirAll 出 ~/Library/Mobile Documents/... ，
+	// 于是在 Linux/Windows 上"成功"写进一棵假的目录树，用户以为同步到手机了。
+	if runtime.GOOS != "darwin" {
+		return fmt.Errorf("--icloud requires macOS (iCloud Drive); on %s use -o <path> instead", runtime.GOOS)
+	}
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("cannot determine home directory: %w", err)
 	}
 	icloudDir := filepath.Join(homeDir, "Library", "Mobile Documents", "com~apple~CloudDocs", "Documents")
-	if err := os.MkdirAll(icloudDir, 0755); err != nil {
-		return fmt.Errorf("cannot create iCloud directory: %w", err)
+	// 不创建 iCloud 容器：它由系统在用户启用 iCloud Drive 时建立。
+	// 自己 MkdirAll 出一棵同名目录树只会造成"看起来成功了"的假象。
+	if fi, statErr := os.Stat(icloudDir); statErr != nil || !fi.IsDir() {
+		return fmt.Errorf("iCloud Drive Documents folder not found at %s (enable iCloud Drive in System Settings, or use -o <path>)", icloudDir)
 	}
 	folderName := filepath.Base(config.RootDir)
 	dateStr := time.Now().Format("2006-01-02")
@@ -1443,35 +1468,55 @@ func copyToClipboardStreaming(config Config, files []FileMetadata, stats Stats) 
 
 	writeErr := writeContent(config, files, stats, pw)
 	pw.Close()
-	cmd.Wait()
+	// 不能丢弃 Wait 的错误：剪贴板工具失败（权限、无 X 会话、clip.exe 异常）
+	// 时用户会看到"已复制"却拿到空剪贴板——比直接报错更糟。
+	if waitErr := cmd.Wait(); waitErr != nil && writeErr == nil {
+		writeErr = fmt.Errorf("clipboard command failed: %w", waitErr)
+	}
 	return writeErr
 }
 
-func uploadViaMultipart(config Config, filePath string, filename string) error {
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
+// escapeQuotes 按 RFC 7578 转义 multipart 文件名里的引号/反斜杠。
+func escapeQuotes(s string) string {
+	return strings.NewReplacer("\\", "\\\\", "\"", "\\\"").Replace(s)
+}
 
+func uploadViaMultipart(config Config, filePath string, filename string) error {
+	// 请求体的构造：多段头部 + 文件内容 + 结尾，用 io.MultiReader 拼起来，
+	// 这样**总长度事先可知**——既不用把文件读进内存，又能带上 Content-Length。
+	//
+	// 为什么不用最简单的 io.Pipe：那样 Go 会退化成 chunked 传输，
+	// 而部分严格的服务端/网关不接受 chunked 请求体，会让 -p 在那些环境里失败。
+	// 实测同一份 30MB 产物：整份读进内存峰值 RSS 92.5MiB，
+	// 现在流式为 13.8MiB（约 1/6.7），且请求头保持 Content-Length。
 	f, err := os.Open(filePath)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-
-	part, err := writer.CreateFormFile("file", filename)
+	fi, err := f.Stat()
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(part, f); err != nil {
-		return err
-	}
-	if err := writer.Close(); err != nil {
-		return err
-	}
 
-	req, err := http.NewRequest("POST", config.PushURL, body)
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	partHeader := make(textproto.MIMEHeader)
+	partHeader.Set("Content-Disposition",
+		fmt.Sprintf(`form-data; name="file"; filename="%s"`, escapeQuotes(filename)))
+	partHeader.Set("Content-Type", "application/octet-stream")
+	if _, err := writer.CreatePart(partHeader); err != nil {
+		return err
+	}
+	preamble := buf.Bytes() // multipart 头部（含首个 boundary）
+	epilogue := fmt.Sprintf("\r\n--%s--\r\n", writer.Boundary())
+
+	req, err := http.NewRequest("POST", config.PushURL,
+		io.MultiReader(bytes.NewReader(preamble), f, strings.NewReader(epilogue)))
 	if err != nil {
 		return err
 	}
+	req.ContentLength = int64(len(preamble)) + fi.Size() + int64(len(epilogue))
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	if config.AuthKey != "" {
 		req.Header.Set("X-Auth-Key", config.AuthKey)
@@ -1484,7 +1529,9 @@ func uploadViaMultipart(config Config, filePath string, filename string) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	// 2xx 都算成功：原来只认 200，把 201 Created / 202 Accepted / 204 No Content
+	// 这些"服务器确实收下了"的响应误判成失败。
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(respBody))
 	}

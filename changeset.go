@@ -315,9 +315,22 @@ func collectChangeSet(config *Config) (*ChangeSet, error) {
 // collectWorkingTree 处理 -g：工作区 + 索引 相对 --rev 的变更。
 func collectWorkingTree(g *gitRunner, config *Config, cs *ChangeSet) error {
 	base := config.GitRev
+	baseNote := ""
 	if cs.Unborn {
 		base = emptyTreeSHA
 		cs.Warnings = append(cs.Warnings, "repository has no commits yet — diffing against the empty tree")
+	} else if config.GitBase != "" {
+		// --base <branch>：和"共同祖先"比较，也就是 git diff <branch>...HEAD 的语义。
+		//
+		// 为什么需要它：直接 diff 对方分支尖端（--rev main）会把**对方的改动**
+		// 反向算进来——实测同一分支用错基准会多出 1 个文件、多算 1 行删除，
+		// 审阅者会看到一处并不存在的删除。
+		mb, mbErr := g.run("merge-base", config.GitBase, "HEAD")
+		if mbErr != nil {
+			return fmt.Errorf("--base %q: cannot find merge-base with HEAD: %w", config.GitBase, mbErr)
+		}
+		base = strings.TrimSpace(mb)
+		baseNote = " (merge-base with " + config.GitBase + ")"
 	} else if _, err := g.run("rev-parse", "--verify", base+"^{commit}"); err != nil {
 		return fmt.Errorf("invalid --rev %q: %w", config.GitRev, err)
 	}
@@ -331,7 +344,7 @@ func collectWorkingTree(g *gitRunner, config *Config, cs *ChangeSet) error {
 		cs.Spec = "git diff --cached " + base + scope
 	} else {
 		cs.Mode = "working tree"
-		cs.Spec = "git diff " + base + scope + "  (working tree + index vs " + base + ")"
+		cs.Spec = "git diff " + base + scope + "  (working tree + index vs " + base + ")" + baseNote
 	}
 
 	// --src-prefix/--dst-prefix 显式固定为 a/ b/：用户配置里的
@@ -448,6 +461,11 @@ func collectHistory(g *gitRunner, config *Config, cs *ChangeSet) error {
 	if config.GitNoMerges {
 		mergeNote = " --no-merges"
 	}
+	if config.GitFirstParent {
+		// 让产物自证口径：只走第一父链（主线视图）时，读者才知道为什么
+		// 特性分支上的中间提交"消失"了
+		mergeNote += " --first-parent"
+	}
 	scope := ""
 	if cs.Pathspec != "" {
 		scope = " -- " + cs.Pathspec
@@ -458,6 +476,10 @@ func collectHistory(g *gitRunner, config *Config, cs *ChangeSet) error {
 		"--format=%H" + logFieldSep + "%h" + logFieldSep + "%an" + logFieldSep + "%ad" + logFieldSep + "%P" + logFieldSep + "%s"}
 	if config.GitNoMerges {
 		logArgs = append(logArgs, "--no-merges")
+	}
+	if config.GitFirstParent {
+		// 只看主线：特性分支上的中间提交被折叠，符合"这条主干推进了哪些点"的直觉
+		logArgs = append(logArgs, "--first-parent")
 	}
 	logArgs = append(logArgs, g.scoped()...)
 

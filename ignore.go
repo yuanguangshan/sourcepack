@@ -31,10 +31,12 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // ignoreRule 是一条已经解析好的 ignore 规则。
@@ -452,7 +454,26 @@ func shouldIgnoreFile(relPath string, config Config, matcher *ignoreMatcher) boo
 // shouldIgnoreFileReason 与 shouldIgnoreFile 判定完全一致，但返回被排除的
 // 原因（"" 表示保留）。git 变更模式需要把"被谁过滤掉了"如实列出来，
 // 否则用户会以为变更丢了。
+var globWarnOnce sync.Once
+
+// warnGlobLookingPatterns 在 -m/-X 的值里出现通配符时提醒一次。
+//
+// -m/-X 是**子串**匹配而不是 glob：`-X '*.go'` 不会排除任何文件，且完全静默。
+// 这是最容易踩的坑之一（用户通常想要 -x go），所以值得主动提示一句。
+func warnGlobLookingPatterns(config Config) {
+	for _, pat := range append(append([]string{}, config.IncludeMatches...), config.ExcludeMatches...) {
+		if strings.ContainsAny(pat, "*?[") {
+			globWarnOnce.Do(func() {
+				fmt.Fprintf(os.Stderr,
+					"⚠  -m/-X 是子串匹配，不是 glob：%q 里的通配符不会生效（按扩展名排除请用 -x）\n", pat)
+			})
+			return
+		}
+	}
+}
+
 func shouldIgnoreFileReason(relPath string, config Config, matcher *ignoreMatcher) string {
+	warnGlobLookingPatterns(config)
 	name := filepath.Base(relPath)
 	ext := filepath.Ext(relPath)
 	if !config.NoDefaultIgnore && ignoreFiles[name] {

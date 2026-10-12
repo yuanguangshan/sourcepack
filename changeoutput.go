@@ -590,9 +590,20 @@ func mdCode(s string) string {
 	}
 	s = escapeControlForInline(s)
 	if strings.ContainsRune(s, '`') {
-		// 反引号在 Markdown 里无法内联转义，退化为纯文本；
-		// 此时控制字符已经转义，不会破坏结构
-		return s
+		// 含反引号时没法用单反引号内联（Markdown 里反引号不能转义），
+		// 也**不能直接返回原文**：那样路径里的 **、_、| 会被渲染成
+		// 加粗/斜体/表格分隔，把产物的结构弄坏。
+		// 用 HTML 实体转义这些元字符——渲染出来仍是原样字符，但不会破坏结构。
+		return strings.NewReplacer(
+			"`", "&#96;",
+			"*", "&#42;",
+			"_", "&#95;",
+			"|", "&#124;",
+			"[", "&#91;",
+			"]", "&#93;",
+			"<", "&lt;",
+			">", "&gt;",
+		).Replace(s)
 	}
 	return "`" + s + "`"
 }
