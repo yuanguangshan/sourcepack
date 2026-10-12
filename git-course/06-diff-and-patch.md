@@ -162,7 +162,8 @@ $ git diff --no-index n1.txt n2.txt | tail -6
 1. `\ No newline at end of file` 以 `\` 开头 → **不会被误判**（天然安全）；
 2. 真正危险的是协议行 `+++ b/x` 与 `--- a/x`——它们也以 `+`/`-` 开头！
 
-`changeset.go:701-737` 的解法是引入 **`inHunk` 状态机**（代码原样）：
+`changeset.go` 的 `splitPatch()` 里用 **`inHunk` 状态机**解决
+（本版在 720–760 行；代码原样）：
 
 ```go
 	inHunk := false          // ← 只有 @@ 之后的行才算数
@@ -276,10 +277,16 @@ index e65757e..b11395c 100644
 Binary files a/logo.bin and b/logo.bin differ
 ```
 
-> **与 sourcepack 的联系**：我们的 `binaryProbeSize = 8000` 就是照这个来的
-> （原注释写着"与 git 的 buffer_is_binary 一致"）。不过我们后来把它**改成整文件校验**
-> ——因为按字节截断的窗口会把"切在多字节字符中间"的合法 UTF-8 误判成二进制
-> （v1.8.1 的真实 P0 bug，见 `PARAMETERS.md`）。
+> **与 sourcepack 的联系**：我们**早期**照这个思路写过 `binaryProbeSize = 8000`
+> （原注释写着"与 git 的 buffer_is_binary 一致"）。但它后来被
+> **改成整文件校验**——因为按字节截断的窗口会把"切在多字节字符中间"的合法 UTF-8
+> 误判成二进制（v1.8.1 的真实 P0 bug，见 `PARAMETERS.md`）。
+>
+> 现在的实现在 `main.go` 的 `isBinaryBuffer()`（本版 766 行附近）——
+> 判据只有两条：**含 NUL 就是二进制，否则必须是合法 UTF-8**。
+> 这里值得记住的是：**搬 Git 的实现时要连它的假设一起搬**，Git 用 8000 字节探针是
+> 因为它假定输入多半是 ASCII/mostly-clean；而我们既然会读任意中文文件，
+> 就得把这条假设换掉。
 
 ### textconv：让用户配置"翻译"二进制
 

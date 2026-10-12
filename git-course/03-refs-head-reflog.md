@@ -177,7 +177,8 @@ $ git rev-parse "v2.0.1^{commit}"
 aa686d8e14f8fc729a32a30d42dbf32c0b94b29f       # 它指向的提交
 ```
 
-所以 `changeset.go:321` 用 `^{commit}` 校验用户给的 `--rev`：
+所以 `changeset.go` 的 `collectHistory` 用 `^{commit}` 校验用户给的 `--rev`
+（本版在 334 行附近）：
 
 ```go
 	} else if _, err := g.run("rev-parse", "--verify", base+"^{commit}"); err != nil {
@@ -414,7 +415,7 @@ $ git log --oneline -1 8c8ccb5        # 直接按哈希读
 | `changeset.go:287` `(no commits yet)` | unborn HEAD 的兜底 | 第三种状态 |
 | `changeset.go:290-297` `rev-parse HEAD` → `log -1 --format=%s` | 取当前提交与标题 | 递归解析；无提交时退到 `(no commits yet)` |
 | `changeset.go:291` `log -1 --format=%s` | 取提交标题 | commit 对象的 message |
-| `changeset.go:321` `rev-parse --verify <base>^{commit}` | 校验 `--rev` | **剥壳** + 让 Git 报错（unborn 时走 :320 的空树分支） |
+| `changeset.go` 的 `rev-parse --verify <base>^{commit}` | 校验 `--rev` | **剥壳** + 让 Git 报错（unborn 时走同函数里的空树分支） |
 | `changeset.go:542` `shortSHA(s)` | 取前 7 位 | Git 的最小无歧义缩写习惯 |
 
 `shortSHA` 的实现（我们**没有**调 `git rev-parse --short`，因为哈希已在手）：
@@ -495,7 +496,7 @@ cat rescue.txt
   `MERGE_HEAD` 等特殊引用（**它们的存在与否本身就是仓库状态**）;
 - **附注标签是独立对象**（`cat-file -t` = `tag`），轻量标签直接指向 commit；
 - revspec 是引用系统的表达式语言（`~`、`^`、`@{n}`、`^{commit}`）；
-  sourcepack 不自己解析，只做校验 + 包装报错（`changeset.go:321`）；
+  sourcepack 不自己解析，只做校验 + 包装报错（`changeset.go` 的 `^{commit}` 校验）；
 - **提交靠"引用可达"进入历史**——这是第 2 章思考题的答案（`update-ref` 0 次 → 1 次）；
 - **reflog 是后悔药**：`reset --hard` 丢的提交可以靠 `HEAD@{n}` 找回来（完整实验见 3.8），
   reflog 过期后还能靠 `fsck` 找 dangling 对象，**最终救回靠的还是"对象不可变"**；

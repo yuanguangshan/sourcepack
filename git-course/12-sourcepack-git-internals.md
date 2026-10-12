@@ -9,7 +9,9 @@
 
 ## 12.1 全景：我们与 Git 的接口只有一层
 
-整个项目对 Git 的依赖被收在一个 40 行的类型里（`changeset.go:160-215` 附近）：
+整个项目对 Git 的依赖被收在一层薄封装 `gitRunner` 里——结构体本身只有 4 个字段
+（`changeset.go` 的 `type gitRunner struct`，本版 157 行起），
+方法集中在 `command()` 一处，前后不过几十行：
 
 ```
    ┌──────────────────────────────────────────────┐
@@ -99,6 +101,7 @@ func (g *gitRunner) command(args ...string) *exec.Cmd {
 | 取提交 | `rev-parse HEAD` / `rev-parse --short HEAD` | 第 2/3 章 |
 | 取标题 | `log -1 --format=%s` | 第 2 章（commit 字段） |
 | 校验 `--rev` | `rev-parse --verify <base>^{commit}` | 第 3 章（剥壳） |
+| 算共同祖先（`--base`） | `merge-base <base> HEAD` | 第 5 章（merge-base 的算法） |
 | 变更清单 | `diff --no-ext-diff --name-status -z -M [--cached] [base] [-- pathspec]` | 第 4/6 章 |
 | 暂存集合 | `diff --no-ext-diff --name-status -z -M --cached <base>` | 第 4 章（索引） |
 | 未暂存集合 | `diff --no-ext-diff --name-status -z -M` | 第 4 章 |
@@ -181,9 +184,21 @@ func parseNameStatusZ(s string) ([]*Change, error) {
 ```bash
 $ grep -oE '"(diff|log|ls-files|rev-parse|symbolic-ref)"' changeset.go | sort -u | tr '\n' ' '
 "diff" "log" "ls-files" "rev-parse" "symbolic-ref"
+# 上面这条正则故意只抓"无条件走"的路径；再补一条，看 --base 分支：
+$ grep -n 'g\.run("merge-base"' changeset.go
+328:		mb, mbErr := g.run("merge-base", config.GitBase, "HEAD")
 ```
 
-**五种子命令，全部只读**（第 9 章已展开）。这带来三个可验证的性质：
+**默认路径五种子命令；启用 `--base` 时是第 6 个：`merge-base <base> HEAD`**
+（`changeset.go:328`）。六条**全都是只读命令**，`merge-base` 只算共同祖先、
+不写对象库也不动引用，所以"只读"的结论不变，只是计数随参数变化。
+
+> 记这个细节是为了说明一件方法论上的事：**用 grep 做"我们只调用了什么"的审计时，
+> 正则本身就是结论的一部分**。上面第一条正则排除了 `merge-base`，
+> 因为它在条件分支里；如果照搬它的输出说"我们只用五条命令"，
+> 就漏了第六条。写这类自查时，要么把分支也 grep 一遍，要么把口径写清楚。
+
+这带来三个可验证的性质：
 
 | 性质 | 为什么重要 |
 | :--- | :--- |
@@ -215,7 +230,7 @@ var oraclePatterns = []string{
 
 ### ② 夹具合成"真实仓库里没有的形态"
 
-第 5 章发现：**sourcepack 自己的 135 个提交里一个合并都没有**。
+第 5 章发现：**sourcepack 自己的提交历史里一个合并都没有**（写作时自查 `--merges` = 0）。
 所以合并相关的代码路径只能靠夹具合成：
 
 | 要覆盖的形态 | 夹具怎么造 | 对应章节 |
@@ -245,7 +260,10 @@ var oraclePatterns = []string{
 **我自己就因为漏做而误判过一次**（补丁没打上却以为测试没覆盖），
 所以后来固定成流程。
 
-**规模**：Go **76 个用例 / 5 个文件** + Node **6 个用例**，CI 跑 3 OS × 3 Go 版本。
+**规模**：Go **79 个用例 / 5 个文件** + Node **6 个用例**，CI 跑 3 OS × 3 Go 版本。
+
+> 用例数会随开发增长（写作时是 79）。自查请用
+> `grep -rn "^func Test" *_test.go | grep -iv TestMain | wc -l`，别照抄书里的数字。
 
 ---
 
@@ -329,7 +347,7 @@ Git 已经负责的部分（对象、引用、合并、忽略、传输），我�
 
 ---
 
-## 12.11 结课自测（综合题）
+## 12.11 自测题（综合）
 
 1. 一个用户报告"我的中文文件名在快照里变成了乱码"，你会先查哪一层的哪个参数？
    （提示：第 12.2 与 12.5）
@@ -344,7 +362,7 @@ Git 已经负责的部分（对象、引用、合并、忽略、传输），我�
 
 ---
 
-## 12.12 结课
+## 12.12 小结（结课）
 
 这套课讲了一个工具与一个系统如何正确相处。回头看，最有价值的不是任何单条命令，而是三种态度：
 

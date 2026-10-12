@@ -325,7 +325,7 @@ $ gx -g --dry-run -d .
 
 `--staged` 模式下 `stagedSet` / `unstagedSet` **都不填充**（因为清单本身来自
 `git diff --cached`，当时的作者认为"不必再算一遍"）。而计数函数是这么写的
-（`changeset.go:561-577`）：
+（`changeset.go` 的 `summarizeChangeSet()`，本版在 583 行起）：
 
 ```go
 func summarizeChangeSet(cs *ChangeSet) {

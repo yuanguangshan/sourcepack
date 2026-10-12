@@ -34,7 +34,7 @@ tree ca33473e4e00110896dcdc9b4a56fd1c2dd76d02
 parent 196c9a76126e549ee8afd7d0bc9f2d6e731e3e4d      # ← 只有一个父
 ```
 
-**一个真实观察**：sourcepack 自己的 135 个提交里**没有任何合并提交**：
+**一个真实观察**（写作时 sourcepack 有 135 个提交）：**没有任何合并提交**：
 
 ```bash
 $ git log --merges --oneline | wc -l
@@ -387,7 +387,8 @@ gx -g --rev "$(git merge-base x1 x2)" --dry-run -d . | grep "Files changed"
 - sourcepack：`-G` 的合并提交取**第一父**并把标注写进产物；
   `-g --rev <分支>` 是**双点语义**，在 PR 审查场景会多算改动
   （实测 3 文件 vs 正确的 2 文件）——`--base` 的实证依据；
-- 我们自己的 135 个提交里**一个合并都没有**，所以合并路径全靠夹具合成，
+- 我们自己的提交历史里**一个合并都没有**（写作时自查：`git rev-list --count --merges HEAD` = 0），
+  所以合并路径全靠夹具合成，
   这是"测试盲区"的一个真实来源。
 
 **下一章**：diff 算法与 patch 格式——Myers 算法在做什么、unified diff 的每一行怎么读、

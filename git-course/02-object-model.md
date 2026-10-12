@@ -263,7 +263,8 @@ R099	gen-docs.go	gdox.go
 
 > 这解释了为什么 `git diff` 默认**不显示重命名**：它必须对比两个 blob，
 > 发现内容相似度超过阈值（默认 50%）才判定为 rename。sourcepack 的
-> `git mv`/rename 支持靠的正是 `-M` 参数（见 `changeset.go:337`）：
+> `git mv`/rename 支持靠的正是 `-M` 参数（见 `changeset.go` 里
+> `diffCommon` 那一组参数，本版在 353 行附近）：
 > `diff --no-ext-diff --no-textconv --no-color -M --src-prefix=a/ --dst-prefix=b/`。
 
 ### 后果二：内容相同的两个文件只存一份

@@ -12,5 +12,9 @@ git_changes.md
 .codex/
 .sessions/
 .claude/settings.local.json
-# book/：本地书稿工作区，整体不入库
-book/
+# book/：成书工作区。**源文件入库，构建产物不入库**。
+#   入库：src/（书稿源）、tools/（构建脚本）、REVIEW.md（审查记录）
+#   不入库：dist/（构建产物，每次重生成，1MB+）、.backup/（防误覆盖的本地快照）
+book/dist/
+book/.backup/
+book/__pycache__/
