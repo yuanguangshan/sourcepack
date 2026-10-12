@@ -860,8 +860,12 @@ Examples:
   sourcepack --icloud                 存到 iCloud Drive（手机可读）
   sourcepack -p -u https://host/submit  推送到远端（或用 SOURCEPACK_PUSH_URL）
 
-完整参数说明与实测示例：见仓库里的 PARAMETERS.md
+更多用法请参考：https://s.want.biz/sourcepack
+（完整参数手册也随包发布：PARAMETERS.md）
 ```
+
+> help 末尾指向的是参数手册的**博客版**（<https://s.want.biz/sourcepack>，渲染更好读）；
+> 离线或内网环境下 `PARAMETERS.md` 随 npm 包一起发布。
 
 示例里的命令名跟随实际调用的名字，npm 全局安装后用 `gx -h` 也不会出现
 `sourcepack-darwin-arm64` 这种内部二进制名。

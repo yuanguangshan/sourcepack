@@ -239,6 +239,7 @@ func TestHelpContainsExamples(t *testing.T) {
 		"# 交给 AI 审查",
 		"# 分享 / 投喂",
 		"PARAMETERS.md",
+		"更多用法请参考：https://s.want.biz/sourcepack",
 		"-g --diff-only",
 		"-G 5 --no-merges",
 		"-I '**/*.log'",

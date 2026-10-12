@@ -555,6 +555,8 @@ Examples:
   ...
 ```
 
+help 末尾还有一行：`更多用法请参考：https://s.want.biz/sourcepack`（本手册的博客版）。
+
 示例里的命令名会跟着**实际调用的名字**变：npm 全局安装后用 `gx -h`，
 示例显示的就是 `sourcepack`（平台二进制名会被归一），不会出现
 `sourcepack-darwin-arm64` 这种内部名字。

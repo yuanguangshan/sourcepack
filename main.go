@@ -330,8 +330,8 @@ func printUsage(w io.Writer, fs *pflag.FlagSet) {
 	fmt.Fprintf(w, "  %s --icloud                 存到 iCloud Drive（手机可读）\n", cmd)
 	fmt.Fprintf(w, "  %s -p -u https://host/submit  推送到远端（或用 SOURCEPACK_PUSH_URL）\n", cmd)
 
-	fmt.Fprintf(w, "\n完整参数说明与实测示例：见仓库里的 PARAMETERS.md\n")
-	fmt.Fprintf(w, "  https://github.com/yuanguangshan/sourcepack/blob/main/PARAMETERS.md\n")
+	fmt.Fprintf(w, "\n更多用法请参考：https://s.want.biz/sourcepack\n")
+	fmt.Fprintf(w, "（完整参数手册也随包发布：PARAMETERS.md）\n")
 }
 
 // programName 用法说明里的程序名。
