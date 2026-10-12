@@ -12,6 +12,5 @@ git_changes.md
 .codex/
 .sessions/
 .claude/settings.local.json
-# book/ 构建产物（源稿若入库，产物不入库）
-book/dist/
-book/tools/__pycache__/
+# book/：本地书稿工作区，整体不入库
+book/
