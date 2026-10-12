@@ -40,7 +40,7 @@ git config user.name Lab
 | [04](04-index-staging.md) | 索引（暂存区） | `add` 到底做了什么？staged/unstaged 的真实含义 |
 | [05](05-commit-graph-and-merge.md) | 提交图与分支合并 | 父子链、merge 的两条父边、fast-forward、merge-base |
 | [06](06-diff-and-patch.md) | diff 算法与 patch 格式 | Myers 算法、unified diff 头、`a/` `b/` 前缀与重命名检测 |
-| 07 | 忽略规则 | `.gitignore` 语义、嵌套、`core.excludesFile`、`check-ignore` |
+| [07](07-ignore-rules.md) | 忽略规则 | `.gitignore` 语义、嵌套、`core.excludesFile`、`check-ignore` |
 | 08 | 远端与传输 | refspec、fetch/push 语义、packfile 协商、force-with-lease |
 | 09 | 历史改写与恢复 | rebase/cherry-pick/revert/reset/reflog/fsck 找回丢失提交 |
 | 10 | 性能与底层 | delta 链、bitmap、commit-graph、partial clone、sparse checkout |
@@ -71,7 +71,8 @@ git config user.name Lab
 | 04 索引（暂存区） | ✅ 已完成 |
 | 05 提交图与分支合并 | ✅ 已完成 |
 | 06 diff 算法与 patch 格式 | ✅ 已完成 |
-| 07–12 | 待续 |
+| 07 忽略规则 | ✅ 已完成 |
+| 08–12 | 待续 |
 
 ---
 
@@ -85,3 +86,4 @@ git config user.name Lab
 | 04 | 索引 = 三棵树的中间那棵（`DIRC` 二进制）；staged/unstaged 是两条边；**冲突时同一路径有 stage 1/2/3** |
 | 05 | 历史是 DAG；合并有两条父边；**`A..B` 会把 A 的改动反向算进来，PR 审查必须用 `A...B`/merge-base** |
 | 06 | diff 是用时算的；**前缀可被用户配置改写**（sourcepack 显式固定）；`--no-textconv` 让工具不受用户外部命令影响 |
+| 07 | `.gitignore` **只管未跟踪文件**；`abc/**` 不含自身；**父目录被排除后 `!` 救不回**——后者是 git 变更模式必须显式回溯祖先的原因 |
