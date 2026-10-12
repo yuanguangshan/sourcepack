@@ -135,6 +135,39 @@ git config user.name Lab
 后面的 `reset --hard`、`rebase`、`filter-branch`、造"丢失的提交"之类都在这里折腾，
 `sourcepack` 本体毫发无损。
 
+### Windows 读者的实验环境（书里命令是按 Unix 写的）
+
+书里的实验与输出都在 **macOS + git 2.39.5** 上跑出来，所以管道命令是 Unix 风格
+（`/tmp`、`sed`、`cat`、`printf`、`python3`）。Windows 上照着抄会在几处卡住，
+但**不影响理解**——它们都是"怎么造实验现场"，不是 Git 本身的知识。建议：
+
+| 书里写的 | Windows 上怎么办 |
+| :--- | :--- |
+| `/tmp/git-lab` | 用 `$env:TEMP\git-lab`（PowerShell）或 `/tmp/git-lab`（**Git Bash** 里可直接用） |
+| `sed -i '' -e ...` | **Git Bash 里可用**（注意 macOS 的 BSD sed 与 GNU sed 语法略有差异：GNU 不要那个空 `''`）。或改用 `printf ... > 文件` |
+| `printf 'x\n' \| git ...` | Git Bash 可用；PowerShell 里 `printf` 不存在，用 `'x' + "`n"` 或 `echo x` |
+| `cat .git/HEAD` | PowerShell 用 `Get-Content .git/HEAD`；Git Bash 用 `cat` |
+| `chmod +x hook` | 见下面第 11 章的钩子实验说明 |
+
+**三条实用建议**：
+
+1. **装 Git for Windows 时选带 Git Bash 的默认安装**，然后**在 Git Bash 里做实验**——
+   书里 95% 的命令可以原样跑。
+2. **行尾（CRLF）**：Windows 检出默认会把 LF 转成 CRLF，这会让第 11 章的钩子脚本
+   报 `bad interpreter: /bin/sh^M`。仓库里若有 `.gitattributes`（本仓库就有一条
+   `* text=auto eol=lf`），clone 后即是 LF；没有的话先跑
+   `git config --global core.autocrlf input` 再重新 clone。
+3. **钩子实验（第 11 章）需要可执行位**：Windows 的文件系统没有 POSIX 可执行位，
+   `chmod +x .git/hooks/pre-commit` 可能无效。两个办法：用 Git Bash（它对钩子做了
+   兼容处理），或直接写 `#!/bin/sh` 开头并让 Git 用 `sh` 调用——也可以用第 11 章
+   的替代做法：**只读钩子源码、观察 CI 里的等效门禁**（`pre-commit` 拦截在
+   CI 上是 `vet`/`gofmt`/`go test`，这部分的观察在 Windows 上完全一样）。
+
+> 换个角度看：第 7 章讲的 `filepath.Match` 在 Windows 上让 `*` 跨过 `/`
+> （`sourcepack` 真实踩过、被 CI 抓到），以及本附录提到的 CRLF 问题——
+> **这两个坑本身就是"平台差异会咬人"的活教材**。你在 Windows 上遇到的麻烦，
+> 恰好印证了书里反复强调的那件事：工具必须显式声明自己的假设。
+
 ### 课程正文在哪
 
 | 位置 | 内容 |
