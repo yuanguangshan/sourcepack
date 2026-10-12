@@ -99,3 +99,22 @@ git config user.name Lab
 | 10 | **delta 压缩**让快照不臃肿（禁深链体积涨 5.6×）；**commit-graph 让纯遍历快 3.4×**；partial clone 有"本地路径被忽略"与"服务端需 allowFilter"两个静默陷阱 |
 | 11 | 客户端钩子可被 `--no-verify` 绕过、服务端钩子不可绕过；**SSH 也能签提交与 tag**；发布链路 = tag → gate → goreleaser → npm + 两段冒烟 |
 | 12 | 所有 git 调用收在一层 `gitRunner`；**用 0x1F 而非空格做字段分隔符**；12 条"读 Git 的工具"checklist；全课知识地图 |
+
+---
+
+## 博客版（每章一篇）
+
+本课程已发布到博客，每章一篇（标题形如 `Git 深入课（N/12）：…`）：
+
+1. [Git 深入课（1/12）：起源与设计哲学](https://blog.want.biz/post/1791824832152)
+2. [Git 深入课（2/12）：对象模型](https://blog.want.biz/post/1791824849922)
+3. [Git 深入课（3/12）：引用、HEAD 与 reflog](https://blog.want.biz/post/1791824853662)
+4. [Git 深入课（4/12）：索引（暂存区）](https://blog.want.biz/post/1791824856808)
+5. [Git 深入课（5/12）：提交图与分支合并](https://blog.want.biz/post/1791824859915)
+6. [Git 深入课（6/12）：diff 算法与 patch 格式](https://blog.want.biz/post/1791824865193)
+7. [Git 深入课（7/12）：忽略规则](https://blog.want.biz/post/1791824876251)
+8. [Git 深入课（8/12）：远端与传输](https://blog.want.biz/post/1791824881712)
+9. [Git 深入课（9/12）：历史改写与恢复](https://blog.want.biz/post/1791824887196)
+10. [Git 深入课（10/12）：性能与底层](https://blog.want.biz/post/1791824891617)
+11. [Git 深入课（11/12）：钩子、签名与发布](https://blog.want.biz/post/1791824895739)
+12. [Git 深入课（12/12）：sourcepack 的 Git 用法全解（结课）](https://blog.want.biz/post/1791824900511)
