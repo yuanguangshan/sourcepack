@@ -76,3 +76,22 @@ jobs:
       - run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # 端到端冒烟：把刚发布的包装回来，验证 postinstall 能从 Releases 下载到
+      # 二进制、且二进制能跑。v1.8.0 的三个线上问题（Windows 装不上、
+      # --staged 计数为 0、-h 丢说明）单测都覆盖不到，但这一步能拦住其中两个。
+      # 注意顺序：先 publish 再冒烟，所以冒烟失败不会让已发布的包消失，
+      # 只是把问题暴露成一次红色构建。
+      - name: 装回来跑一遍（postinstall + 二进制）
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          for i in 1 2 3 4 5 6; do
+            npm install -g "sourcepack@$VERSION" && break
+            echo "registry 还在传播，${i}/6 重试..."
+            sleep 15
+          done
+          sourcepack --version | grep -q "$VERSION"
+          sourcepack -h | grep -q "Convenience shortcuts:"
+          echo "✓ 冒烟通过" 
