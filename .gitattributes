@@ -1,0 +1,6 @@
+# 统一按 LF 检出。
+#
+# Windows 上 GitHub runner 的系统 gitconfig 里 core.autocrlf=true，会把文本
+# 文件检出成 CRLF；而 gofmt -l 会把 CRLF 文件判成"未格式化"，CI 的格式闸门
+# 就会在 Windows 上假失败（实测 3 个 Windows job 全挂在 gofmt 这一步）。
+* text=auto eol=lf
