@@ -194,3 +194,48 @@
 ## 5. 给 lead 的一句话处置建议
 
 书可以发，但**发版前请至少修 D1（附录 B "92 条"→167，6 处）与 D2（12 章补 `merge-base`）**；D3/D4 建议一并改（源码行号锚点改用"函数名/约"表述，"76"→"79"）。D5–D8 可择要处理。D 项/机械类质量很高，无需返工。
+
+---
+
+## 6. 第二轮复核（应 lead 要求，针对"已修版" `eafcfe4`+`1fbf6ee`）
+
+审查时间：2026-10-13 02:50（BOOK.md 6436 行 / 02:42 重建）。原则不变：不轻信"已修"，逐条看产物。
+
+### 6.1 先抽验 lead 声称的 D1–D9 修复是否真落地 —— 确认属实
+- **D1** ✅ `92 条` 在 BOOK.md 归零；改为"（编排时共 **167 条**；每条都经 `git help -a` 确认存在）"+"命令数量会随 Git 版本与本书版次变化……不再报总数"（BOOK.md:5690-5692）——既给数又免责，处理得当。
+- **D4** ✅ 已改 **79 个用例**。
+- **D8** ✅ 12.11/12.12 已改名"自测题（综合）"/"小结（结课）"，与 1–11 章统一。
+- **附录 C 假"第 6 部分"** ✅ `P6`/`第 6 部分` 已归零。
+- **系统性校验** ✅ `book/tools/build.py` 确已新增 `find_stale_go_anchors()` / `find_dangling_section_refs()` / `find_bad_local_anchors()`（grep 命中）。
+
+### 6.2 审 lead 修 D2/D5 时新增的两段论述 —— 均准确、与全书口径一致，未引入新错
+- **D2 段（"正则本身就是结论的一部分"，BOOK.md:5173-5176）**：两条 grep 均真实（第一条复现出 5 个；第二条 `grep -n 'g\.run("merge-base"'` 命中 `changeset.go:328`，已核对）；方法论与全书"以真值为准/别照抄自己以为的"一脉相承，**无新不准确**。
+- **D5 段（"搬 Git 的实现时要连它的假设一起搬"，BOOK.md:2743-2752）**：`binaryProbeSize=8000` 已改为历史叙述；"现在实现在 `main.go` 的 `isBinaryBuffer()`（本版 766 行附近）——含 NUL 即二进制、否则必须合法 UTF-8"与源码逐字一致（`isBinaryBuffer` 确在 766，逻辑即 `IndexByte(buf,0)>=0 || !utf8.Valid(buf)`）；"Git 用 8000 探针因假定输入多半 ASCII"是对其启发式的合理解释，**无硬伤**。
+
+### 6.3 附录 D 逐条核资源/命令 —— 大体扎实，但新发现 3 个问题
+
+**已核实真实可用（实证）**：
+- 附录 D 引用的 git 子命令全部存在于本机 git 2.39.5：`bugreport / diagnose / count-objects / fsck / bundle / filter-branch / gc / repack / hash-object / mktree / commit-tree / update-ref / symbolic-ref / rev-parse / merge-base / ls-files / check-ignore / log / diff / show / reflog / pack-refs`。（`lost-found` 是 `git fsck --lost-found` 的旗标、非命令，书写正确。）
+- `GIT_TRACE / GIT_TRACE_PACKET / GIT_TRACE_PERFORMANCE` 三变量均被识别，`GIT_TRACE=1 git --version` 确实输出 trace。
+- `git diagnose --mode=all`：实测 exit 0、产出诊断包 ✅。
+- 附录 D 的 14 处"第 N(.M)(.K) 节"引用：**0 失效**（独立复算）。
+- 资源名称均为真实存在（Pro Git、Git Reference、Myers 1986、patience diff(Bram Cohen)、Rabin fingerprint(1981)、SHAttered(CWI+Google)、git-sizer、git-filter-repo、tig、lazygit、gitk、pre-commit、gitleaks/git-secrets、Gitea/GitLab CE 等）；全书恪守"给搜索关键词、不编 URL"的硬规矩，**未发现编造链接**。
+
+**新问题：**
+- **F1 ［中］作者本机绝对路径泄漏进 7 处实验命令，读者无法复现**
+  - 位置：`book/dist/BOOK.md:458/634/6377`、`book/src/back-40-appendix-d-reading.md:129`、`git-course/01-history-and-philosophy.md:49/225`、`git-course/README.md:23`。
+  - 现象：`git clone /Users/ygs/ygs/sourcepack /tmp/git-lab` —— 作者本机 home 路径。而全书**别处用的是可移植占位符**：`BOOK.md:352` 的 `/path/to/sourcepack`、`BOOK.md:182` 的 `<本仓库或你自己的仓库>`。三套口径并存；泄漏处读者照抄即 `fatal: repository '/Users/ygs/ygs/sourcepack' does not exist`——恰好是第 1 章"全书第一件要做的事"。
+  - 命令与输出：`grep -rn "/Users/ygs" book/dist/BOOK.md book/src/*.md git-course/*.md` → 命中上述 7 处。
+  - 建议修法：7 处 `/Users/ygs/ygs/sourcepack` 统一改为 `/path/to/sourcepack`（与 352 行口径一致）。
+- **F2 ［低］D6 修复遗漏：附录 D 仍写"command() 那 40 行"**
+  - 位置：`book/dist/BOOK.md:6404`、`book/src/back-40-appendix-d-reading.md:156`。lead 只在 12.1 改了 D6，附录 D 的交叉表漏改。
+  - 实证：`command()` 实际仅 **179-191（13 行）**（`grep -n "func (g \*gitRunner) command("` → 179）。"40 行"即便按 lead 改后的"前后几十行"也偏大。
+  - 建议：改为"`gitRunner`（逻辑集中在 `command()`）"或"`command()` 前后十余行"。
+- **F3 ［低］D.3 `git bugreport` 撞名结论对、但给出的规避法不对**
+  - 位置：附录 D.3 诊断表 `git bugreport` 行（约 BOOK.md:6280）。
+  - 实证：撞名结论**正确**——同分钟第 2 次运行确报 `fatal: unable to create 'git-bugreport-<date>-<time>.txt': File exists`（exit 128）。**但**建议的"用 `-o <目录>` 指定位置"**不能规避同分钟撞名**：两次都 `-o .`（同目录）仍第 2 次失败；正确做法是 `--suffix`/`-s`（实测 `--suffix aaa` 与 `--suffix bbb` 同分钟生成两个不同文件成功）或写到 stdout/不同目录。
+  - 建议：把"用 `-o <目录>` 指定位置"改为"用 `--suffix`/`-s` 指定不同文件名后缀，或改输出目录"。
+  - （旁证：本沙箱里 `git bugreport` 即便成功生成文件也返回 exit 1，未深究成因，仅作环境观察记录，**不**据此断言普遍行为。）
+
+### 6.4 本轮结论
+lead 的 D1–D9 修复**属实且质量高**，两段新增论述经审**准确、贴题**。附录 D 整体扎实、无编造资源。老二审新发现 **F1（中，作者路径泄漏 7 处）+ F2/F3（低）**，均建议发版前顺手修掉；尤其 **F1 直接影响读者照抄第 1 章第一条实验命令**，优先级最高。

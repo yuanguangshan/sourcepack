@@ -46,12 +46,15 @@ Linus 当时提的设计要求（原话大意）：
 **在标本仓库上验证"每个克隆都有完整历史"** `[lab]`：
 
 ```bash
-$ git clone -q /Users/ygs/ygs/sourcepack /tmp/git-lab && cd /tmp/git-lab
+$ git clone -q /path/to/sourcepack /tmp/git-lab && cd /tmp/git-lab   # 换成你自己的路径
 $ git log --oneline | wc -l
-135
+135              # 写作时的数字，你的 clone 会不一样
 $ git log --oneline -1
 aa686d8 docs: v2.0.1 记录（-h 末尾换成参数手册博客版）；还原 v2.0.0 的 help 引用为当时真实输出
 ```
+
+（这两行的具体数字只对当时那个快照成立：提交数只会增长，最新提交更是每次提交都变。
+要看"结构"请自己数一遍——`git log --oneline | wc -l` 与 `git log --oneline -1`。）
 
 **拔网线也一样能跑**——`git log`、`git diff`、`git blame` 全部是读本地
 `.git/objects`，不需要任何网络。这就是"分布式"的实际含义。
@@ -222,7 +225,8 @@ sp -g 全流程 ≈ 210 ms（500 个文件变更时）
 
 ```bash
 # 0) 建实验克隆（如果你还没建）
-git clone -q /Users/ygs/ygs/sourcepack /tmp/git-lab && cd /tmp/git-lab
+#    把 /path/to/sourcepack 换成你本机的路径（或直接 clone 本仓库）
+git clone -q /path/to/sourcepack /tmp/git-lab && cd /tmp/git-lab
 git config user.email lab@example.com && git config user.name Lab
 
 # 1) 看清 .git 的骨架

@@ -145,6 +145,30 @@ def collect_section_ids(md_text: str) -> set:
     return ids
 
 
+def find_absolute_path_leaks(md_text: str) -> list:
+    """
+    找出泄漏进书稿的**作者本机绝对路径**。
+
+    这种泄漏隐蔽且伤人：实验命令写成 `/Users/<name>/...` 在作者机器上能跑，
+    读者照抄第一条就 `fatal: repository '<path>' does not exist`。
+    审查时实证过：全书因此混着三套口径（绝对路径 / `/path/to/sourcepack` /
+    `<本仓库或你自己的仓库>`），而它恰好砸在"全书第一件要做的事"上。
+
+    判据：命令行与正文里出现 `/<Users|home>/<用户>/` 这类宿主路径。
+    报告里保留 `/Users/ygs` 字样是正常的（那是内审文档，不是给读者的命令）。
+    """
+    bad, in_fence = [], False
+    # 宿主目录前缀（macOS/Linux 的 home）。/tmp、/usr 等系统路径不算泄漏。
+    pat = re.compile(r"(?:^|[\s`'\"(=])(/(?:Users|home)/[A-Za-z0-9._-]+/)")
+    for i, line in enumerate(md_text.split("\n")):
+        if re.match(r"^\s*(`{3,}|~{3,})", line):
+            in_fence = not in_fence
+            continue
+        for m in pat.finditer(line):
+            bad.append((i + 1, m.group(1)))
+    return bad
+
+
 def find_stale_go_anchors(md_text: str) -> list:
     """
     校验书里引用的**源码行号锚点**（如 `changeset.go:583`）仍然指向该函数。
@@ -678,6 +702,14 @@ def verify(md_text: str, expected_chapters: int = 12):
         problems.append(
             f"{len(bad_anchor)} 处内部锚点链接指向不存在的锚点："
             + "; ".join(f"第 {ln} 行 → #{a}" for ln, a in bad_anchor[:6]))
+
+    # 作者本机绝对路径绝不能泄漏进给读者的命令（读者照抄就会 fatal）。
+    leak = find_absolute_path_leaks(md_text)
+    if leak:
+        paths = sorted({p for _, p in leak})
+        problems.append(
+            f"{len(leak)} 处作者本机绝对路径泄漏（读者照抄会 fatal：repository 不存在）："
+            f"{', '.join(paths)}；首个在第 {leak[0][0]} 行")
 
     # 源码行号锚点必须落在该 .go 文件的行数范围内（越界一定是漂移）。
     # 注意这只抓"越界"这种硬漂移；行号对但函数错仍可能漏过，属已知边界。

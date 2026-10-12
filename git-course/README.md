@@ -20,7 +20,7 @@
 **1. 先建一个实验克隆**（重要：破坏性实验绝不在你真在用的仓库上做）
 
 ```bash
-git clone /Users/ygs/ygs/sourcepack /tmp/git-lab
+git clone /path/to/sourcepack /tmp/git-lab   # 换成你自己本机的路径
 cd /tmp/git-lab
 git config user.email lab@example.com
 git config user.name Lab

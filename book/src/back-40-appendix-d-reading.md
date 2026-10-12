@@ -66,7 +66,7 @@
 
 | 工具 | 干什么 | 什么时候用 |
 | :--- | :--- | :--- |
-| `git bugreport` | 生成一份含版本、配置、系统信息的缺陷报告模板 | 要给别人报 Git 的问题时先跑它，省掉一堆来回追问（注意默认文件名含**分钟级**时间戳，同一分钟内重复跑会因文件已存在而失败，用 `-o <目录>` 指定位置） |
+| `git bugreport` | 生成一份含版本、配置、系统信息的缺陷报告模板 | 要给别人报 Git 的问题时先跑它，省掉一堆来回追问。**两个坑**：① 默认文件名只到**分钟**，同一分钟内重复跑会因文件已存在而失败（实测 exit 128），用 `-s <后缀>`（如 `-s a`、`-s b`）才能拿到不同文件名——注意 `-o <目录>` **只改位置不改名**，规避不了这个撞名；② 产出的 zip 会包含仓库结构信息，公开前先看一眼内容 |
 | `git diagnose --mode=all` | 收集完整诊断包（含仓库结构统计）到一个 zip | 怀疑仓库本身有问题（对象损坏、性能异常）时；产物含仓库结构信息，**公开前先看一眼内容** |
 | `GIT_TRACE=1` | 打印 Git 实际执行了哪些内部命令 | "它到底替我跑了什么"——最常见的第一次排查 |
 | `GIT_TRACE_PACKET=1` | 打印传输协议往返（`want`/`have`） | 怀疑 fetch/push 传得太多或卡住时（第 8.7 节用它看协商） |
@@ -126,7 +126,7 @@
 **这是全书第一件要做的事，也是最重要的一条纪律**：破坏性实验绝不在你正在用的仓库上做。
 
 ```bash
-git clone /Users/ygs/ygs/sourcepack /tmp/git-lab
+git clone /path/to/sourcepack /tmp/git-lab
 cd /tmp/git-lab
 git config user.email lab@example.com
 git config user.name Lab
@@ -153,7 +153,7 @@ git config user.name Lab
 | 空树对象 `4b825dc...` 的用途 | `changeset.go` 里的 `emptyTreeSHA` 常量与它的调用点 |
 | 分支名 / detached / unborn 三段回退 | `changeset.go` 里 `symbolic-ref` → `rev-parse` 的那段 |
 | 忽略规则的完整语义实现 | `ignore.go`，以及 `ignore_test.go` 里那张"模式 × 路径"对照表 |
-| 只读命令清单与 hardening | `changeset.go` 里的 `gitRunner`（`command()` 那 40 行） |
+| 只读命令清单与 hardening | `changeset.go` 里的 `gitRunner`（逻辑集中在 `command()`） |
 | 发布链路与闸门 | `.github/workflows/release.yml` 与 `.goreleaser.yaml` |
 | 12 条"读 Git"的 checklist | 第 12.9 节，逐条都能在代码里指认现场 |
 
