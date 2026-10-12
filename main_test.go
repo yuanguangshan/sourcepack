@@ -452,9 +452,6 @@ func TestGenerateAnchor(t *testing.T) {
 	}
 }
 
-// 剪贴板工具失败时必须报错，而不是照旧打印"已复制"。
-// 做法：把 PATH 前面塞一个必定失败（退出码 3）的 pbcopy 假命令。
-// 这条修复对应 README 里记录过的已知问题："cmd.Wait() 的错误被丢弃"。
 // --icloud 只在 macOS 且 iCloud 容器存在时工作；
 // 不能在别的平台凭空造出 ~/Library/Mobile Documents/... 目录树。
 func TestICloudRequiresDarwinAndExistingContainer(t *testing.T) {
@@ -480,12 +477,27 @@ func TestICloudRequiresDarwinAndExistingContainer(t *testing.T) {
 	}
 }
 
+// 剪贴板工具失败时必须报错，而不是照旧打印"已复制"。
+//
+// 注意：不同平台的剪贴板命令不同（darwin→pbcopy、linux→xclip/xsel、windows→clip），
+// 所以这里把**所有**候选命令都塞成"必定失败"的假可执行文件，
+// 让本用例在三个平台的 CI 上都真正走到那条分支（最初只假造 pbcopy，
+// 结果在 windows-latest 上跑的是真的 clip，测试自己失败了）。
 func TestClipboardSurfacesCommandFailure(t *testing.T) {
+	// Windows 上这条用例没法用"假命令"实现：剪贴板命令固定是 clip，
+	// 而 Go 1.24 起明确禁止 exec.Command 直接执行 .bat/.cmd（CVE-2024-24576 的缓解），
+	// 无法用脚本冒充它。修复本身是平台无关的（都是检查 cmd.Wait() 的退出码），
+	// 该路径在 ubuntu/macOS 的 CI 上覆盖。
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 无法用脚本冒充 clip（Go 禁止直接执行批处理文件）")
+	}
 	dir := t.TempDir()
-	fake := filepath.Join(dir, "pbcopy")
-	mustWrite(t, fake, "#!/bin/sh\nexit 3\n")
-	if err := os.Chmod(fake, 0o755); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"pbcopy", "xclip", "xsel"} {
+		exe := filepath.Join(dir, name)
+		mustWrite(t, exe, "#!/bin/sh\nexit 3\n")
+		if err := os.Chmod(exe, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
