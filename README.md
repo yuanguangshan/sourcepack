@@ -860,15 +860,15 @@ Examples:
   sourcepack --icloud                 存到 iCloud Drive（手机可读）
   sourcepack -p -u https://host/submit  推送到远端（或用 SOURCEPACK_PUSH_URL）
 
-更多用法请参考：https://s.want.biz/sourcepack
-（完整参数手册也随包发布：PARAMETERS.md）
+完整参数说明与实测示例：见仓库里的 PARAMETERS.md
+  https://github.com/yuanguangshan/sourcepack/blob/main/PARAMETERS.md
 ```
-
-> help 末尾指向的是参数手册的**博客版**（<https://s.want.biz/sourcepack>，渲染更好读）；
-> 离线或内网环境下 `PARAMETERS.md` 随 npm 包一起发布。
 
 示例里的命令名跟随实际调用的名字，npm 全局安装后用 `gx -h` 也不会出现
 `sourcepack-darwin-arm64` 这种内部二进制名。
+
+> 上面这段是 v2.0.0 当时的真实输出；help 末尾的链接在 v2.0.1 换成了
+> 参数手册的博客版（见下一节）。
 
 ### 3. 新增参数手册 [PARAMETERS.md](PARAMETERS.md)
 
@@ -879,3 +879,22 @@ Examples:
 
 - 新增 `-h` 示例段的回归测试（`TestHelpContainsExamples`）；
 - `-d` 校验的回归测试（`TestValidateConfigRejectsBadRootDir`）。
+
+---
+
+## 新增记录（2026-10-12 · v2.0.1）
+
+只有一处用户可见变化：**`-h` 末尾的参考链接换成了参数手册的博客版**。
+
+```diff
+-完整参数说明与实测示例：见仓库里的 PARAMETERS.md
+-  https://github.com/yuanguangshan/sourcepack/blob/main/PARAMETERS.md
++更多用法请参考：https://s.want.biz/sourcepack
++（完整参数手册也随包发布：PARAMETERS.md）
+```
+
+- 博客版渲染更好读（<https://s.want.biz/sourcepack>）；
+- 保留 `PARAMETERS.md` 那行是为了**离线/内网**场景——它随 npm 包一起发布；
+- 小提示：该短链**不带浏览器 UA 请求会被挡成 404**（`curl` 直接访问可能看不到内容），
+  浏览器打开正常；
+- 新增断言：`TestHelpContainsExamples` 现在要求这行链接存在。
