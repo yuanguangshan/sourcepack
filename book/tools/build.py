@@ -71,13 +71,15 @@ FRONT = ["front-00-title.md", "front-10-preface.md", "front-20-copyright.md"]
 BACK = ["back-10-appendix-a-glossary.md",
         "back-20-appendix-b-commands.md",
         "back-30-appendix-c-map.md",
-        "back-40-appendix-d-reading.md"]
+        "back-40-appendix-d-reading.md",
+        "back-50-appendix-e-advanced-map.md"]
 
 APPENDIX_TITLES = {
     "back-10-appendix-a-glossary.md": "附录 A　术语表",
     "back-20-appendix-b-commands.md": "附录 B　命令速查",
     "back-30-appendix-c-map.md": "附录 C　知识地图与学习路径",
     "back-40-appendix-d-reading.md": "附录 D　延伸阅读与工具",
+    "back-50-appendix-e-advanced-map.md": "附录 E　进阶主题地图",
 }
 
 
@@ -413,7 +415,10 @@ def build_book_md() -> tuple:
         md = read(SRC / fname)
         title, rest = strip_first_h1(md)
         title = title or APPENDIX_TITLES.get(fname, fname)
-        parts_md.append(heading(2, title) + "\n" + rest.strip() + "\n")
+        # 附录标题 = H2，其小节下沉一级成 H3 —— 与"章 = H2、章内小节 = H3"对齐。
+        # 之前漏了这一步，导致 `## A.1` 与 `## 附录 A` 同级：
+        # 侧栏里附录小节和章标题看起来是兄弟，层级塌了一层。
+        parts_md.append(heading(2, title) + "\n" + demote(rest, 1).strip() + "\n")
         slug_by_chapter[fname] = toc[-1][2]
 
     # --- 前置 ---
@@ -830,7 +835,7 @@ def main():
         "表格": len(re.findall(r"^\s*\|", full, re.M)),
         "章": len(re.findall(r"^## 第 \d+ 章", full, re.M)),
         "部": len(re.findall(r"^# 第[一二三四五]部", full, re.M)),
-        "附录": len(re.findall(r"^## 附录 [A-D]", full, re.M)),
+        "附录": len(re.findall(r"^## 附录 [A-E]", full, re.M)),
     }
     print("=== 构建完成 ===")
     for k, v in stats.items():
