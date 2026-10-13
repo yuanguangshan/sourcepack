@@ -457,9 +457,9 @@ $ git log --oneline -1 8c8ccb5        # 直接按哈希读
 | `changeset.go:282-285` `symbolic-ref` → `rev-parse` | 分支名 / detached | **符号引用 vs 值** |
 | `changeset.go:287` `(no commits yet)` | unborn HEAD 的兜底 | 第三种状态 |
 | `changeset.go:290-297` `rev-parse HEAD` → `log -1 --format=%s` | 取当前提交与标题 | 递归解析；无提交时退到 `(no commits yet)` |
-| `changeset.go:291` `log -1 --format=%s` | 取提交标题 | commit 对象的 message |
+| `changeset.go:292` `log -1 --format=%s` | 取提交标题 | commit 对象的 message |
 | `changeset.go` 的 `rev-parse --verify <base>^{commit}` | 校验 `--rev` | **剥壳** + 让 Git 报错（unborn 时走同函数里的空树分支） |
-| `changeset.go:542` `shortSHA(s)` | 取前 7 位 | Git 的最小无歧义缩写习惯 |
+| `changeset.go:564` `shortSHA(s)` | 取前 7 位 | Git 的最小无歧义缩写习惯 |
 
 `shortSHA` 的实现（我们**没有**调 `git rev-parse --short`，因为哈希已在手）：
 

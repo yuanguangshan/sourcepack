@@ -269,7 +269,7 @@ $ git check-ignore -q keep.tmp ; echo $?  → 1（保留 ✅）
 | **全量扫描**（遍历工作区） | 在目录上判定 → 命中就 `SkipDir`，天然满足 git 的规则 |
 | **git 变更模式**（清单来自 git，没有遍历） | **必须显式回溯各级父目录**，否则 `a/b/c` 会被当成"未被忽略"漏进产物 |
 
-源码（`ignore.go:101-111`）：
+源码（`ignore.go:103-115`）：
 
 ```go
 	// 祖先目录被忽略 → 本路径也被忽略，而且**无法用 ! 重新纳入**
@@ -312,7 +312,7 @@ $ git check-ignore -q keep.tmp ; echo $?  → 1（保留 ✅）
 - 于是 `src/*.go` 在 Windows 上会匹配 `src/sub/main.go` —— **过度排除**。
 
 ```go
-// ignore.go:357
+// ignore.go:359-360
 // 用 path.Match 而不是 filepath.Match：后者在 Windows 上把 \ 当分隔符、把 /
 // 当普通字符，* 于是会跨过 /（这正是 CI 在 windows-latest 上抓到的差异）。
 ```
@@ -483,7 +483,7 @@ git ls-files --others --exclude-standard
    Unix/macOS 上是 `/`，Windows 上是 `\`（我核对了 Go 1.24 的 `path/filepath/match.go`；`path.Match` 则写死"非 `/`"）。
    于是 `src/*.go` 在 Windows 上会匹配 `src/sub/main.go`——7.8.1 的 CI 原文就是
    `matchPattern("src/sub/main.go", "src/*.go") = true, want false`，三个 windows job 同时挂。
-   修法是改用 `path.Match`（`ignore.go:357`），并把 `windows-latest` 加进 CI 矩阵；
+   修法是改用 `path.Match`（`ignore.go:367`），并把 `windows-latest` 加进 CI 矩阵；
    这类"只在某个平台成立"的差异，没有对应平台的 CI 就永远发现不了。
 
 </details>

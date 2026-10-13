@@ -281,7 +281,7 @@ $ git ls-files --stage conflict.txt
 
 ## 4.9 回到 sourcepack：三个计数是怎么来的
 
-### 4.9.1 取三个集合（代码原样，`changeset.go:366-388`）
+### 4.9.1 取三个集合（代码原样，`changeset.go:379-394`）
 
 ```go
 	unstagedSet := map[string]bool{}

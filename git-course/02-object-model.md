@@ -237,7 +237,7 @@ $ git diff --stat 4b825dc642cb6eb9a060e54bf8d69288fbee4904 $ROOT
  3 files changed, 799 insertions(+)
 ```
 
-这正是 `changeset.go:319` 那行 `base = emptyTreeSHA` 在做的事：
+这正是 `changeset.go:320` 那行 `base = emptyTreeSHA` 在做的事：
 **根提交 vs 空树 = 整个项目的初始内容**。
 
 > **顺带**：这也是 Git 的"基线树"思想的一个缩影——任何两个 tree 都能 diff，
@@ -448,7 +448,7 @@ git log --oneline --name-status -M --follow -- main.go | grep '^R'
 - commit 的字段（tree/parent/author/committer/message）正是 `-G` 产物摘要里
   日期与作者的来源；我们**只取标题不取正文**是个已知缺口；
 - **空树 `4b825dc6...` 是普适常量**，sourcepack 用它当"根提交"的 diff 基准
-  （`changeset.go:319`），让首提交显示为"全部新增"；
+  （`changeset.go:320`），让首提交显示为"全部新增"；
 - **blob 不含文件名** → 重命名免费、内容去重，rename 检测靠 `-M` 与相似度
   （我们仓库的 `R093 godoc.go → main.go` 就是证据）。
 

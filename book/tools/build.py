@@ -282,35 +282,89 @@ def find_absolute_path_leaks(md_text: str) -> list:
 
 def find_stale_go_anchors(md_text: str) -> list:
     """
-    校验书里引用的**源码行号锚点**（如 `changeset.go:583`）仍然指向该函数。
+    校验书里引用的**源码行号锚点**（如 `changeset.go:583`）仍然指对地方。
 
     这类锚点必然会漂移：书写完之后只要有人往这个文件加一行，全部下移。
-    审查时已经实证了 4 处漂移（`561-577`→583、`701-737`→720-760、
-    `321`→334、`337`→353），都是"代码还在、行号对不上"。
+    审查时已实证过 4 处（`561-577`→583、`701-737`→720-760、`321`→334、`337`→353）。
 
-    所以这里只做**弱校验**：把 `文件名:行号` 或 `文件名:起-止` 解析出来，
-    看看那一行/那个区间内是否还包含书中提到的函数名（如果书里提到了的话）。
-    提不出函数名的，就把行号本身和"该文件当前总行数"比对——
-    越界的一律报出来。宁可漏报（行号对但函数错），不可把明显越界的放过。
+    两级校验：
+
+    ① **越界**（弱）：行号超过该文件当前总行数 → 必报。
+    ② **漂移**（中）：如果同一行里还有反引号包住的**代码片段**
+       （形如 `foo(` 或 `x = y`），取片段里第一个长度 ≥3 的标识符，
+       要求它出现在锚点区间 ±TOL 行内；否则报"锚点漂移"。
+
+    为什么 ② 只认"代码片段"而不是所有反引号词：正文里的 `changeset`、`diff`、
+    `log`、`rev` 都是普通词，按词校验会满屏假阳性——实测对 29 处锚点跑一遍，
+    27 处能提出标识符，其中 15 处是这种假阳性。改成"只认代码片段"后干净了：
+    实测它抓到了 `changeset.go:542 → shortSHA`（真实位置 564，漂移 22 行）。
+
+    仍然会漏报（例如整行只有一个区间、没有代码片段时），但"宁可漏报，
+    不可把明显漂的放过"——漂移 20 行以上现在会直接让构建失败。
     """
+    TOL = 8          # 允许的行号偏差（够容忍小改动，又能抓住几十行的漂移）
     bad = []
-    go_files = {}
+    src = {}
     for p in ROOT.glob("*.go"):
-        go_files[p.name] = len(p.read_text(encoding="utf-8").split("\n"))
+        src[p.name] = p.read_text(encoding="utf-8").split("\n")
     # 形如 `changeset.go:561-577` / `changeset.go:583:` / `ignore.go:101-111`
     pat = re.compile(r"\b([A-Za-z0-9_]+\.go):(\d+)(?:-(\d+))?\b")
+    snippet = re.compile(r"`([^`]+)`")
+    ident = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\b")
+
+    def code_like(tok: str) -> bool:
+        """反引号里是不是"代码样"的 token（而不是普通词或命令行）。
+
+        实测这档宽度是合适的：对修正后的书稿跑一遍**零误报**，
+        同时能抓住 `path.Match`（`ignore.go:367`）这类锚点漂移。
+        """
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.()\[\] =<>%+\-]*", tok):
+            return False
+        if any(c in tok for c in "()=<>"):
+            return True                      # `shortSHA(s)`、`base = emptyTreeSHA`
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*", tok):
+            return True                      # `path.Match`
+        return bool(re.search(r"[a-z][A-Z]", tok))   # camelCase：`emptyTreeSHA`
+
+    in_fence = False
     for i, line in enumerate(md_text.split("\n")):
-        if line.startswith("```"):          # 代码块内的引用不校验（示例性质）
+        # 代码块内的引用不校验：那是**引用原文**（可能是有意保留的历史输出，
+        # 例如 CI 报错原文 `main_test.go:40: ...`），不是活锚点。
+        if re.match(r"^\s*(`{3,}|~{3,})", line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
             continue
         for m in pat.finditer(line):
-            fname, start, end = m.group(1), int(m.group(2)), m.group(3)
-            if fname not in go_files:
+            fname, start = m.group(1), int(m.group(2))
+            end = int(m.group(3)) if m.group(3) else start
+            if fname not in src:
                 continue
-            total = go_files[fname]
-            last = int(end) if end else start
-            if start > total or last > total + 5:
-                bad.append((i + 1, f"{fname}:{start}" + (f"-{end}" if end else ""),
-                            f"该文件当前仅 {total} 行"))
+            lines = src[fname]
+            total = len(lines)
+            label = f"{fname}:{start}" + (f"-{m.group(3)}" if m.group(3) else "")
+            # ① 越界
+            if start > total or end > total + 5:
+                bad.append((i + 1, label, f"该文件当前仅 {total} 行"))
+                continue
+            # ② 漂移：只认代码片段里的标识符
+            names = []
+            for sm in snippet.finditer(line):
+                if not code_like(sm.group(1)):
+                    continue
+                for t in ident.findall(sm.group(1)):
+                    if len(t) >= 3 and not t.endswith(".go"):
+                        names.append(t)
+                        break
+            for t in names:
+                lo, hi = max(1, start - TOL), min(total, end + TOL)
+                if not any(re.search(r"\b" + re.escape(t) + r"\b", l) for l in lines[lo - 1:hi]):
+                    hits = [n + 1 for n, l in enumerate(lines)
+                            if re.search(r"\b" + re.escape(t) + r"\b", l)]
+                    bad.append((i + 1, label,
+                                f"锚点里声称的 `{t}` 不在 {lo}-{hi} 行内"
+                                + (f"（该标识符实际在 {hits[:4]} 行）" if hits else "（文件里没有这个标识符）")))
+                    break
     return bad
 
 

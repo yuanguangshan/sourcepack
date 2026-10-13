@@ -369,7 +369,7 @@
 | `git replace -l` `[验]` | 列出替换引用（`git replace` 能在不改历史的前提下"嫁接"对象）。 |
 | `git sparse-checkout set --no-cone '<pattern>'` `[验]` | 只检出匹配的工作区文件（`--cone` 按目录，`--no-cone` 按模式）。 |
 | `git bisect start` / `git bisect reset` `[验]` | 二分查找"哪个提交引入了问题"；`reset` 结束并回到原分支。 |
-| `git bugreport -o <dir>` `[验]` | 生成缺陷报告模板（默认文件名含时间戳，**同一分钟内重复跑会因文件已存在而失败**）。 |
+| `git bugreport` `[验]` | 生成缺陷报告模板，文件名形如 `git-bugreport-<年-月-日-时-分>.txt`。**坑一**：时间戳只到**分钟**，同一分钟内重复跑会 `File exists`、退出码 **128**——要换名用 `-s <后缀>`（`-o <dir>` 只改目录不改名）。**坑二**：非交互环境（未设 `EDITOR`）下即使文件创建成功，退出码也是 **1**（`error: Terminal is dumb, but EDITOR unset`）——别拿退出码判断成败，看 `Created new report at …`。 |
 | `git diagnose --mode=all -o <dir>` `[验]` | 收集完整诊断包到一个 zip（含仓库结构信息，公开前先看内容）。 |
 | `git filter-branch` `[验]` | 老的历史重写工具；启动时会自己打印"有大量坑，建议改用 `git filter-repo`"的警告。 |
 | `git filter-repo` `[验]` | 官方推荐的历史重写工具（需单独安装；本机已可用，`--help` 可读 man 页）。 |
