@@ -13,6 +13,133 @@
 
 ---
 
+## B.0　任务速查：我想干什么 → 用哪条命令
+
+> B.1 起的分组表是**命令优先**的：你得先知道命令叫什么，才能去查它干什么。
+> 这一节反过来——**从"我想干什么"出发**，先给命令，再指向讲原理的那一节。
+> 它补的是"命令还没背下来"那个阶段；等背下来了，B.1 起的表更好用。
+>
+> 官方那张 [Git Cheat Sheet](https://git-scm.com/cheat-sheet)（git-scm.com，MIT）
+> 用的也是这种"任务 → 命令"组织方式，值得对照着看；
+> 本节是它的**中文重写版**，并按本书章节做了索引（版权与许可说明见附录 D.1）。
+
+### 起手：拿到仓库 / 建仓库
+
+| 我想干什么 | 命令 | 细节 |
+| :--- | :--- | :--- |
+| 新建一个仓库 | `git init` | 第 2 章 |
+| 把别人的仓库弄到本地 | `git clone <url>` | 第 8.1 节 |
+| 只要最近一次提交（省时间省流量） | `git clone --depth=1 <url>` | 第 10.6 节 |
+| 只要历史、不要文件内容 | `git clone --filter=blob:none <url>` | 第 10.6 节 |
+
+### 把改动放进"下一次提交"
+
+| 我想干什么 | 命令 | 细节 |
+| :--- | :--- | :--- |
+| 暂存一个文件 | `git add <file>` | 第 4.3 节 |
+| 暂存全部改动（含删除） | `git add -A` | 第 4.3 节 |
+| 只暂存文件里的某几行 | `git add -p` | 第 4.3 节 |
+| 改文件名 | `git mv <old> <new>` | 第 2.8 节（blob 不变） |
+| 删文件 | `git rm <file>` | 第 4.8 节 |
+| 让 Git 别再跟踪它（文件留着） | `git rm --cached <file>` | 第 4.8 节 |
+| 把一个文件从暂存区撤下来 | `git restore --staged <file>`（旧写法 `git reset <file>`） | 第 4.8 节 |
+| 现在到底是什么状态 | `git status`（第一列 staged、第二列 unstaged） | 第 4.4 节 |
+
+### 提交
+
+| 我想干什么 | 命令 | 细节 |
+| :--- | :--- | :--- |
+| 提交（开编辑器写信息） | `git commit` | 第 2.4 节 |
+| 一句话提交 | `git commit -m 'msg'` | 第 2.4 节 |
+| 跳过暂存直接提交（只对**已跟踪**文件有效） | `git commit -am 'msg'` | 第 4.3 节 |
+| 补进上一次提交（改信息或补文件） | `git commit --amend` | 第 9.5 节（哈希会变） |
+| 撤销最近一次提交、改动留着 | `git reset --soft HEAD~1` | 第 9.2 节 |
+
+### 分支与切换
+
+| 我想干什么 | 命令 | 细节 |
+| :--- | :--- | :--- |
+| 列分支 | `git branch` | 第 3.1 节 |
+| 按最近提交时间排 | `git branch --sort=-committerdate` | 第 3.1 节 |
+| 新建并切过去 | `git switch -c <name>`（旧写法 `git checkout -b <name>`） | 第 3.7 节 |
+| 切分支 | `git switch <name>` | 第 3.7 节 |
+| 删已合并的分支 | `git branch -d <name>` | 第 3.3 节 |
+| 强删分支 | `git branch -D <name>` | 第 3.3 节 |
+| 临时看一眼某个提交 | `git switch --detach <commit>` | 第 3.7 节（detached HEAD） |
+
+### 看"改了什么"
+
+| 我想干什么 | 命令 | 细节 |
+| :--- | :--- | :--- |
+| 看未暂存的改动 | `git diff` | 第 4.5 节 |
+| 看已暂存的改动 | `git diff --staged` | 第 4.5 节 |
+| 看相对上次提交的全部改动 | `git diff HEAD` | 第 4.5 节 |
+| 看某个提交改了什么 | `git show <commit>` | 第 6.3 节 |
+| 看两个提交之间的差异 | `git diff <a> <b>` | 第 5.5 节 |
+| 只和分叉点比（PR 口径） | `git diff main...HEAD` | 第 5.6 节 |
+| 只要统计 | `git diff --stat` | 第 6.3 节 |
+
+### 看历史
+
+| 我想干什么 | 命令 | 细节 |
+| :--- | :--- | :--- |
+| 一行一条 | `git log --oneline` | 第 5.1 节 |
+| 画提交图 | `git log --graph --oneline --all` | 第 5.1 节 |
+| 只看主干 | `git log --first-parent` | 第 5.4 节 |
+| 某个文件的历史（跨改名） | `git log --follow -- <file>` | 第 2.8 节 |
+| 谁改的某一行 | `git blame <file>` | 第 6.1 节 |
+| 数提交个数 | `git rev-list --count HEAD` | 第 5.4 节 |
+| 某段文字是哪次提交引入/删掉的 | `git log -G 'pattern'` | 第 6.2 节 |
+
+### 撤销与救援
+
+| 我想干什么 | 命令 | 细节 |
+| :--- | :--- | :--- |
+| 丢弃某个文件的工作区改动 | `git restore <file>` | 第 4.8 节 |
+| 丢弃全部暂存+工作区改动（危险） | `git reset --hard` | 第 9.2 节 |
+| 删未跟踪文件（先 `-n` 空跑） | `git clean -n` → `git clean -fd` | 第 4.8 节 |
+| 临时收起手头改动 | `git stash` / `git stash pop` | 第 4.8 节 |
+| 撤销一次提交但保留历史（安全） | `git revert <commit>` | 第 9.3 节 |
+| 把某次提交复制到当前分支 | `git cherry-pick <commit>` | 第 9.4 节 |
+| **提交或分支"丢了"** | `git reflog` → 找到哈希 → `git reset --hard <哈希>` | 第 3.8 节、第 9.8 节 |
+| 回到上一次操作之前 | `git reset --hard ORIG_HEAD` | 第 9.8 节 |
+
+### 合并与变基
+
+| 我想干什么 | 命令 | 细节 |
+| :--- | :--- | :--- |
+| 把分支合进来 | `git merge <branch>` | 第 5.3 节 |
+| 强制留下合并提交（保住特性边界） | `git merge --no-ff <branch>` | 第 5.3 节 |
+| 压成一个提交合进来 | `git merge --squash <branch>` 然后 `git commit` | 第 5.3 节 |
+| 把当前分支重放到新基底 | `git rebase <base>` | 第 9.6 节 |
+| 整理最近 5 个提交（squash/reword/drop） | `git rebase -i HEAD~5` | 第 9.6 节 |
+| rebase 搞砸了 | `git reflog` 找 rebase 之前的哈希 | 第 9.8 节 |
+
+### 远端
+
+| 我想干什么 | 命令 | 细节 |
+| :--- | :--- | :--- |
+| 加远端 | `git remote add <name> <url>` | 第 8.1 节 |
+| 拉取但不改本地分支 | `git fetch origin` | 第 8.4 节 |
+| 拉取并变基 | `git pull --rebase` | 第 8.2 节 |
+| 推当前分支（首次用 `-u` 建立跟踪） | `git push` / `git push -u origin <name>` | 第 8.2 节 |
+| 推标签 | `git push --tags` | 第 8.3 节 |
+| 安全强推 | `git push --force-with-lease` | 第 8.6 节 |
+| 看远端有哪些分支/标签 | `git ls-remote origin` | 第 8.1 节 |
+
+### 配置与文件
+
+| 我想干什么 | 命令 | 细节 |
+| :--- | :--- | :--- |
+| 设用户名/邮箱 | `git config user.name '...'` / `git config user.email '...'` | 第 8.8 节 |
+| 写全局配置 | `git config --global ...` | 第 8.8 节 |
+| 设别名 | `git config alias.st status` | 第 8.8 节 |
+| 列出全部配置及其来源文件 | `git config --list --show-origin` | 第 8.8 节 |
+| 忽略文件 | 编辑 `.gitignore`；排查用 `git check-ignore -v <path>` | 第 7.1 节、第 7.3 节 |
+| 看某个版本里的某个文件 | `git show <rev>:<path>` | 第 2.5 节 |
+
+---
+
 ## B.1　看历史与图
 
 | 命令 | 它到底干了什么 |

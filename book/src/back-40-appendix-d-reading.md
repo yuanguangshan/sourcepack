@@ -24,6 +24,23 @@
 > `git help` 就是那个"真值"的书面形式——它和你本机二进制是同一个版本，
 > 不会像网上文章那样写着三年前的行为。
 
+### 官方速查表（一页纸，适合打印）
+
+| 资源 | 是什么 | 怎么拿到 |
+| :--- | :--- | :--- |
+| **Git Cheat Sheet**（git-scm.com 官方） | 官方站点那张"任务 → 命令"速查表：Getting Started / Prepare to Commit / … / Configure Git，另有一张可打印的 PDF | 搜 **`git cheat sheet`**，或直接开 `git-scm.com/cheat-sheet`；PDF 在 `git-scm.com/cheat-sheet.pdf` |
+
+> **为什么这里只给链接、不转载内容**：这张表属于 **git-scm.com 网站**
+> （源码仓库 `git/git-scm.com`，默认分支 `gh-pages`），采用 **MIT 许可**，
+> 版权声明为 `Copyright (c) 2012-2026 Scott Chacon and others`。
+> MIT 允许转载，但要求**在所有副本中保留版权声明与许可文本**；
+> 与其在中文书里夹一页英文原表（风格割裂、且与附录 B 大量重复），
+> 不如把它的**组织方式**用中文重写成 **附录 B.0「任务速查」**——那张表真正的价值
+> 不在命令清单，而在"从我想干什么出发"的索引方式。
+>
+> 顺带澄清一个常见混淆：**Git 程序本身是 GPLv2**，而 git-scm.com 的**站点内容**是 MIT，
+> 两者互不相干（本站另有 trademark 政策，限制的是 "Git" 名称与 logo 的使用，与文本收录无关）。
+
 ### 值得追的几类文章
 
 | 来源 | 搜什么 | 为什么值得 |

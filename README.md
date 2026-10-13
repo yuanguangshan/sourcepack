@@ -7,7 +7,7 @@
 > 📚 想拿它当**书**读？`gx -book` 出书排版：封面 + 目录 + 按目录分「部」的章节 + 附录，
 > Markdown 文章按正文排版（不是代码块）。见 [书排版](#书排版-book给人读的版本)。
 >
-> 🎓 想深入 Git？本仓库附带一套 12 章的 **[Git 深入课](git-course/README.md)**——以本项目为标本，从对象模型、索引、提交图讲到性能与发布链路，每章都附本机实测输出与动手实验（[博客版](git-course/published-urls.md)）。
+> 🎓 想深入 Git？本仓库附带一套 12 章的 **[Git 深入课](git-course/README.md)**——以本项目为标本，从对象模型、索引、提交图讲到性能与发布链路，每章都附本机实测输出与动手实验（[博客版](git-course/published-urls.md)）。**写给日常在用 Git、想建立底层模型的工程师，不是入门课。**
 >
 > 📘 这套课也已装订成**一本书**（5 部 12 章 + 6 份附录：术语表 / 命令速查 / 知识地图 / 延伸阅读 / [进阶主题地图](book/src/back-50-appendix-e-advanced-map.md) / [把 checklist 跑起来](book/src/back-60-appendix-f-minigx.md)）。
 > 书稿源在 [`book/`](book/src/)（`book/src/` 是元内容与附录，`git-course/` 是正文）；
