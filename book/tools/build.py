@@ -72,7 +72,8 @@ BACK = ["back-10-appendix-a-glossary.md",
         "back-20-appendix-b-commands.md",
         "back-30-appendix-c-map.md",
         "back-40-appendix-d-reading.md",
-        "back-50-appendix-e-advanced-map.md"]
+        "back-50-appendix-e-advanced-map.md",
+        "back-60-appendix-f-minigx.md"]
 
 APPENDIX_TITLES = {
     "back-10-appendix-a-glossary.md": "附录 A　术语表",
@@ -80,6 +81,7 @@ APPENDIX_TITLES = {
     "back-30-appendix-c-map.md": "附录 C　知识地图与学习路径",
     "back-40-appendix-d-reading.md": "附录 D　延伸阅读与工具",
     "back-50-appendix-e-advanced-map.md": "附录 E　进阶主题地图",
+    "back-60-appendix-f-minigx.md": "附录 F　把 checklist 跑起来",
 }
 
 
@@ -835,7 +837,7 @@ def main():
         "表格": len(re.findall(r"^\s*\|", full, re.M)),
         "章": len(re.findall(r"^## 第 \d+ 章", full, re.M)),
         "部": len(re.findall(r"^# 第[一二三四五]部", full, re.M)),
-        "附录": len(re.findall(r"^## 附录 [A-E]", full, re.M)),
+        "附录": len(re.findall(r"^## 附录 [A-F]", full, re.M)),
     }
     print("=== 构建完成 ===")
     for k, v in stats.items():
