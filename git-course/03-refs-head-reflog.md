@@ -75,6 +75,29 @@ aa686d8
 **这两个命令的区别是整个第 3 章的关键**：`symbolic-ref` 问"名字"，
 `rev-parse` 问"值"。
 
+**一条链，两种问法**（第 3.7 节的 detached HEAD 就是这条链的第二种形态）：
+
+```mermaid
+flowchart LR
+    H[".git/HEAD<br/>ref: refs/heads/main"]
+    R["refs/heads/main<br/>aa686d8…"]
+    C["commit aa686d8<br/>（真正的对象）"]
+    H -->|"① symbolic-ref HEAD<br/>回答：refs/heads/main"| R
+    R -->|"② rev-parse HEAD<br/>回答：aa686d8…"| C
+    H -.->|"rev-parse 会自己走完整条链<br/>（所以它不告诉你中间站是哪）"| C
+```
+
+**detached 时这条链少了一环**：`.git/HEAD` 里直接写哈希，
+于是"取名字"失败、"取值"照旧成功——这不是 bug，是设计（3.7 节）：
+
+```mermaid
+flowchart LR
+    H2[".git/HEAD<br/>aa686d8…（直接是哈希）"]
+    C2["commit aa686d8"]
+    H2 -->|"symbolic-ref HEAD<br/>✗ fatal: ref HEAD is not a symbolic ref"| X["没有名字"]
+    H2 -->|"rev-parse HEAD<br/>✓ aa686d8…"| C2
+```
+
 ---
 
 ## 3.3 引用的命名空间
@@ -328,6 +351,25 @@ $ gx -g --dry-run -d . | grep -E "Branch|HEAD"
 - `.git/logs/refs/heads/<branch>`（每个分支各自的移动史）
 
 **它不是历史，是"历史的历史"**——每次 checkout/commit/reset/merge/rebase 都追加一行。
+
+**为什么"指针挪回去"就能救命**：分支只是指针，`reset` 只动指针；
+提交对象一旦写进对象库就不可变，只要还有**任何**引用（分支、tag、reflog）指着它，
+`gc` 就不会回收：
+
+```mermaid
+flowchart LR
+    subgraph L["提交链（不可变）"]
+        A["aa686d8"] --> B["4f2ada7<br/>重要提交"]
+    end
+    BR1["refs/heads/recover"] -.->|"reset --hard HEAD~1 之后<br/>不再指它"| B
+    BR1 -->|"现在指向"| A
+    RL["reflog（.git/logs/HEAD）<br/>HEAD@{1}: commit: 重要提交"] -->|"仍然指着它"| B
+    RES["git reset --hard 4f2ada7"] -->|"把分支指针挪回来"| B
+```
+
+**读法**：`reset --hard` 只做两件事——**挪指针**（`refs/heads/...`）和
+**同步工作区**（把文件改回去）。它**不删除对象**。所以"救回来"的完整条件只有一条：
+那个提交的哈希还在某处被记着（reflog 就是最可靠的那一处）。
 
 ### 完整实验：把提交 reset 掉，再救回来 `[lab]`
 

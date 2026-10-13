@@ -578,6 +578,9 @@ summary{cursor:pointer;font-weight:600;padding:.3rem 0}
 details[open] summary{border-bottom:1px solid var(--line);margin-bottom:.6rem}
 .mermaid{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
 padding:1rem;margin:1.1rem 0;overflow-x:auto}
+/* EPUB 里图退化成代码块时用的容器与图注（HTML 版走 .mermaid，用不到） */
+.figure{margin:1.1rem 0}
+.figure figcaption{font-size:.78rem;color:var(--muted);margin-top:.3rem;padding-left:.2rem}
 #top{position:fixed;right:1.2rem;bottom:1.2rem;background:var(--accent);color:#fff;
 border-radius:50%;width:2.4rem;height:2.4rem;display:grid;place-items:center;
 text-decoration:none;opacity:.45;font-size:1.1rem}
@@ -803,7 +806,7 @@ media-type="application/oebps-package+xml"/></rootfiles></container>""")
         for fid, title, md in files:
             # EPUB 关掉"悬停显示 #"的锚点链接：电子书阅读器不会悬停，
             # 那个 # 会变成标题后面一个可见的井号，纯噪音。
-            r = Renderer(shift=0, anchors=False)
+            r = Renderer(shift=0, anchors=False, mermaid="code")
             body = r.render(md)
             xhtml = ('<?xml version="1.0" encoding="utf-8"?>\n'
                      '<!DOCTYPE html>\n<html xmlns="http://www.w3.org/1999/xhtml" '

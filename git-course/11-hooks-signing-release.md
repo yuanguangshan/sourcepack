@@ -69,6 +69,31 @@ $ git config core.hooksPath .githooks         # 团队成员各自设置一次
 | **客户端**（本地） | `pre-commit`、`commit-msg`、`pre-push`、`pre-rebase` | 你执行对应命令时 | ✅ `--no-verify` / 直接不装 |
 | **服务端**（仓库侧） | `pre-receive`、`update`、`post-receive` | 收到推送时 | ❌ 客户端无法绕过 |
 
+**一次提交/推送要过几道闸**（左边三道在你机器上，右边两道在服务器上）：
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant You as 你（工作区）
+    participant Local as 本地仓库（.git/hooks）
+    participant Remote as 服务端裸仓库（hooks/）
+    You->>Local: git commit
+    Local->>Local: pre-commit（跑 lint / 测试，可 --no-verify 跳过）
+    Local->>Local: 生成提交对象、写 commit-msg 钩子
+    Local-->>You: 提交完成（此时还完全在本地）
+    You->>Remote: git push（传对象 + 更新引用请求）
+    Remote->>Remote: pre-receive（整体一次：可以否决整批）
+    Remote->>Remote: update（逐个引用一次：可以只否决某个分支）
+    Remote->>Remote: 真正更新 refs
+    Remote->>Remote: post-receive（通知/部署，此时已成事实）
+    Remote-->>You: 返回结果（被拒时引用不更新，对象留在远端但不被引用）
+```
+
+**读法**：客户端钩子只是"自律"（`--no-verify` 一句话就绕过），
+**服务端钩子才是闸**——而且 `pre-receive` / `update` 的区别值得记住：
+前者能"一次否决整批推送"，后者能"只否掉其中某个分支"。
+`post-receive` 已经无法改变结果，所以它只适合做通知、部署这类副作用。
+
 ### 实测：服务端 `pre-receive` 是真正的闸
 
 ```bash
@@ -188,6 +213,22 @@ push tag v*  →  gate  →  goreleaser  →  npm-publish(+ 两段冒烟)
                 ↓            ↓                  ↓
             全套检查     构建 6 个平台归档    发布 npm 并装回来验证
 ```
+
+**失败会停在哪一步**（`needs` 的语义就是这个）：
+
+```mermaid
+flowchart LR
+    TAG["push tag v*"] --> GATE["gate<br/>vet · gofmt · test -race · node --test"]
+    GATE -->|"通过"| GR["goreleaser<br/>构建 6 个平台归档 + changelog"]
+    GATE -->|"失败"| STOP1["中止：一个归档都不会产出<br/>（tag 已存在，修完要删 tag 重推）"]
+    GR -->|"通过"| NPM["npm-publish<br/>推包 + 装回来冒烟"]
+    GR -->|"失败"| STOP2["中止：npm 不发布<br/>（Release 可能已部分上传）"]
+    NPM --> DONE["发布完成"]
+```
+
+**读法**：闸门在**最前面**——它的存在意义是"宁可一个归档都不产出，也不要把
+已知有问题的版本发出去"（11.5 节那个 v1.8.0 事故就是没有这道闸）。
+三段之间是**硬依赖**（`needs`），所以任何一段失败，后面都不会跑。
 
 **① `gate`（发布闸门）**：
 

@@ -38,6 +38,28 @@ type gitRunner struct {
 **为什么要收成一层**：只要所有调用都经过 `command()`，
 加固措施就**不可能被漏掉**（新增调用自动继承）。这和后端服务里"所有出站请求走同一个 client"是同一个道理。
 
+**一次 `-g`（未提交改动）从命令到产物，数据是怎么流的**：
+
+```mermaid
+flowchart TD
+    A["collectChangeSet()"] --> B["gitRunner.command()<br/>--no-pager -c core.quotepath=false -C &lt;dir&gt;<br/>GIT_TERMINAL_PROMPT=0 · GIT_OPTIONAL_LOCKS=0"]
+    B --> C1["git rev-parse --show-toplevel<br/>（仓库根）"]
+    B --> C2["git symbolic-ref --short HEAD<br/>（分支名；detached 时失败→回退）"]
+    B --> C3["git diff --name-status -z &lt;rev&gt;<br/>（权威清单：谁变了、怎么变的）"]
+    B --> C4["git diff --patch &lt;rev&gt; --no-textconv …<br/>（diff 正文，可能很大）"]
+    B --> C5["git ls-files --others --exclude-standard -z<br/>（未跟踪文件）"]
+    C3 --> D["按 diff --git 切块，<br/>与清单逐条对齐"]
+    C4 --> D
+    C5 --> D
+    D --> E["过滤/忽略/敏感文件/体积 gate"]
+    E --> F["渲染：变更摘要 + 逐文件 diff<br/>+ 变更后全文"]
+```
+
+**读法**：左边一列是**五条独立的 git 调用**——sourcepack 不去"推导"状态，
+而是**问 git 要权威答案**（`-z` 防路径含空格/换行、`--no-textconv` 防用户配置
+让 diff 失败，见 12.5）。中间那一步"把 patch 贴回清单"是全书最脏的地方：
+patch 的路径可能被前缀改写，而清单是权威（第 6 章 6.11 节的四处硬骨头）。
+
 ```go
 func (g *gitRunner) command(args ...string) *exec.Cmd {
 	full := make([]string, 0, len(args)+5)

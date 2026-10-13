@@ -36,6 +36,32 @@ $ git cat-file -t HEAD:README.md
 blob
 ```
 
+**四种对象怎么互相指**（箭头方向 = "谁指向谁"；只有 ref 是可移动的）：
+
+```mermaid
+flowchart LR
+    REF["refs/heads/main<br/>（一个文件，内容是 41 字节哈希）"]
+    TAG["tag 对象<br/>v2.1.0"]
+    C2["commit<br/>父提交 · tree · 作者/时间 · 信息"]
+    C1["commit（父）"]
+    T["tree（根目录）"]
+    T2["tree（子目录）"]
+    B1["blob<br/>README.md 的内容"]
+    B2["blob<br/>main.go 的内容"]
+
+    REF -->|"指向"| C2
+    TAG -->|"指向（打标签不会改 ref）"| C1
+    C2 -->|"parent"| C1
+    C2 -->|"tree"| T
+    T -->|"模式 100644 名字 README.md"| B1
+    T -->|"模式 040000 名字 src"| T2
+    T2 -->|"模式 100644 名字 main.go"| B2
+```
+
+**读法**：`ref` 是唯一"会动"的东西（`commit`/`reset` 改的是它），
+其余全是**不可变对象**——它们之间只有"指向"，没有"上一版是什么"。
+blob 上永远挂着"名字"的是 tree 的条目，不是 blob 自己。
+
 > **关键设计**：**blob 里没有文件名**。名字只存在于 tree 的条目里。
 > 这带来两个后果：① 两份内容相同的文件只存一份 blob（去重免费）；
 > ② **重命名不改变 blob**——第 2.8 节用我们自己的改名历史证明。

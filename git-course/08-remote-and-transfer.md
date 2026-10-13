@@ -174,6 +174,22 @@ $ git -C ../shared.git log --oneline | grep -c 'A: 第二个提交'
 `fetch`/`push` 不会重传整个仓库。客户端会告诉服务端：
 **"我要这个（want）"+"我已经有这些（have）"**，服务端据此算出一个**最小 packfile**。
 
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as 客户端（本地有 697 个对象）
+    participant S as 服务端（远端）
+    C->>S: want 6914313…（我要这个提交）
+    C->>S: have aed8c2c…（我已有这些，一串直到"够了"）
+    Note over S: 从 want 出发遍历对象图，<br/>在 have 处剪枝 → 差集就是"要发的"
+    S-->>C: packfile（只含差集，通常几个对象）
+    Note over C: 写入 .git/objects，<br/>更新 refs/remotes/origin/*
+```
+
+**读法**：**传输量正比于"差集大小"，而不是仓库大小**——所以"have 报得准"很关键：
+客户端报得越接近服务端认知，服务端剪枝越狠。`have` 不是随便列的，它按
+**提交时间倒序**报（最近的几十个），服务端在"连续几轮没有新对象"时收尾。
+
 **用 `GIT_TRACE_PACKET` 看协议**（实测片段）：
 
 ```

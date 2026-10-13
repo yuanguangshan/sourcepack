@@ -109,12 +109,16 @@ class Renderer:
     """把 Markdown 渲染成 HTML 片段。会记录标题，供生成目录用。"""
 
     def __init__(self, shift: int = 0, collect_headers: bool = True,
-                 anchors: bool = True):
+                 anchors: bool = True, mermaid: str = "div"):
         self.shift = shift              # 标题整体下沉层级（书名页 H1 → 书的 H1 之下）
         self.headers = []               # [(level, text, slug)]
         self.collect = collect_headers
         # HTML 版要"悬停显示 #"的锚点链接；EPUB 版不要（那是可见的噪音文字）
         self.anchors = anchors
+        # mermaid 块怎么输出：
+        #   "div"  = <div class="mermaid">，交给页面里的 mermaid.js 渲染（HTML 版）
+        #   "code" = <pre> + 图注，保留源码（EPUB 版：阅读器不执行脚本，画不了图）
+        self.mermaid = mermaid
         self._used = {}
 
     def _uniq(self, slug: str) -> str:
@@ -144,7 +148,16 @@ class Renderer:
                 i += 1  # 吃掉收尾围栏
                 code = "\n".join(body)
                 if lang == "mermaid":
-                    out.append(f'<div class="mermaid">{esc(code)}</div>')
+                    if self.mermaid == "code":
+                        # EPUB：阅读器不执行 JS，图渲染不出来。当代码块显示，
+                        # 并注明"HTML 版有图"——比把 DSL 裸文本丢在正文里强。
+                        out.append('<figure class="figure">'
+                                   f'<pre><code class="language-mermaid">{esc(code)}\n</code></pre>'
+                                   '<figcaption>图（mermaid 源码）：HTML 版渲染为图形；'
+                                   'EPUB 阅读器不执行脚本，故此处保留源码。</figcaption>'
+                                   '</figure>')
+                    else:
+                        out.append(f'<div class="mermaid">{esc(code)}</div>')
                 else:
                     cls = f' class="language-{lang}"' if lang else ""
                     out.append(f"<pre><code{cls}>{esc(code)}\n</code></pre>")

@@ -119,6 +119,41 @@ $ git log --graph --oneline -5
 > （否则 fast-forward 之后，特性分支的边界就消失了）。
 > 代价是历史不再是直线——这也是各团队在"rebase 流"与"merge 流"之间取舍的根源。
 
+**merge 与 rebase 对图做了什么**（同一个分叉，两种处理）：
+
+```mermaid
+gitGraph
+    commit id: "1b915db 共同祖先"
+    branch feat5
+    commit id: "7d60908 feat.txt"
+    commit id: "7e94b86 改 feat.txt"
+    checkout main
+    commit id: "8f0c8ed 改 base.txt"
+    merge feat5 id: "8b69c5c merge --no-ff"
+```
+
+```mermaid
+gitGraph
+    commit id: "1b915db 共同祖先"
+    branch feat5
+    commit id: "7d60908 feat.txt"
+    commit id: "7e94b86 改 feat.txt"
+    checkout main
+    commit id: "8f0c8ed 改 base.txt"
+    checkout feat5
+    commit id: "重放①（新哈希）"
+    commit id: "重放②（新哈希）"
+    checkout main
+    merge feat5 id: "rebase 后 main 快进"
+```
+
+**读法**（上半 merge、下半 rebase）：
+merge 保留**双方原始提交**，用一条新的双亲提交把两条线缝在一起——
+所以 `8b69c5c` 有两个 parent，`git log` 默认会同时显示两条线；
+rebase 则是把 feat5 的两个提交**在 main 的新基线上重新提交一遍**（内容相同、父不同 → 哈希必然变），
+于是原来的 `7d60908`、`7e94b86` 变成"没人引用的旧对象"（第 9 章：别人已经拉过它们，
+就会表现为"同事被迫重新 clone"）。
+
 ---
 
 ## 5.4 两条父边：`^1`、`^2` 与 `--first-parent`

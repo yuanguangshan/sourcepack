@@ -15,6 +15,29 @@
 取两个 tree（或两个 blob） → 逐文件比较内容 → 用 diff 算法算出"最小编辑脚本" → 渲染成文本
 ```
 
+**这两个 tree 从哪来**——`git diff` 的每一对"新旧两侧"其实来自不同的树
+（第 4 章的三棵树在这里变成"比较的端点"）：
+
+```mermaid
+flowchart LR
+    subgraph L["旧侧（---）"]
+        L1["HEAD 里的 tree<br/>（--cached / --staged 时）"]
+        L2["索引里的 blob<br/>（不带参数时）"]
+    end
+    subgraph R["新侧（+++）"]
+        R1["索引里的 blob<br/>（--cached / --staged 时）"]
+        R2["工作区文件<br/>（不带参数时）"]
+    end
+    C["commit 里的 tree"]
+    L1 ---|"git diff --cached<br/>只看 staged"| R1
+    L2 ---|"git diff<br/>只看 unstaged"| R2
+    C ---|"git diff HEAD<br/>staged + unstaged 合起来"| R2
+```
+
+**读法**：`--cached` 比的是"HEAD ↔ 索引"，不带参数比的是"索引 ↔ 工作区"——
+**同一个命令，端点换了**。而 `git show <commit>` / `git diff A B` 的两侧则是两个 commit 里的 tree。
+（这也是 6.7 节前缀的来源：`a/` 永远指旧侧、`b/` 永远指新侧。）
+
 **没有"变更记录"这种东西**。这也解释了几个常见困惑：
 
 | 困惑 | 原因 |

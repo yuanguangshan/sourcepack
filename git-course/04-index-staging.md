@@ -35,6 +35,28 @@ HEAD  ──────────────────► 索引  ──�
 - `git diff` = 索引 ↔ 工作区 → 这就是 **unstaged**（未暂存）
 - `??` = 工作区里有、但索引里没有 → **untracked**（未跟踪）
 
+**日常命令分别动哪棵树**（这张图能挡住 90% 的"我明明 add 了"类困惑）：
+
+```mermaid
+flowchart LR
+    HEAD["HEAD 指向的 commit<br/>上次提交"]
+    WT["工作区<br/>你此刻的文件"]
+    IDX["索引 .git/index<br/>下次提交的候选快照"]
+    NEW["新 commit 对象"]
+    BR["分支指针<br/>refs/heads/main"]
+
+    WT -->|"git add"| IDX
+    HEAD -->|"git restore --staged<br/>（撤销 add：索引退回 HEAD 的内容）"| IDX
+    IDX -->|"git commit"| NEW
+    NEW -->|"成功后分支前移，HEAD 跟着走"| BR
+    BR -->|"git checkout / switch<br/>用目标分支的内容同时改写索引与工作区"| WT
+    HEAD -.->|"git diff --cached、git diff<br/>（只读：不改任何一棵树）"| IDX
+```
+
+**读法**：`add` 只写索引（所以 `git status` 第一列变了、第二列没变）；
+`commit` 只读索引写对象，再挪分支指针；`checkout` 是唯一"一次改写两棵树"的日常命令。
+`reset` 的三种模式是这张图的特例——第 9 章会用同一张图讲清楚它到底动了哪几棵。
+
 > 记住这张图，"staged 是什么意思"就再也不会混了：
 > **staged = 索引里的内容与 HEAD 不同**，而不是"我运行过 add"。
 
