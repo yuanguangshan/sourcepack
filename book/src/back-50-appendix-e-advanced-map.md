@@ -226,7 +226,7 @@ DAG 的"祖先关系"天然可二分（沿第一父往回是一串线性历史�
 | 材料 | 为什么推荐 | 入口 |
 | :--- | :--- | :--- |
 | **Pro Git（中文版，免费）** | 覆盖最全的系统性教材；本书没写的主题它基本都有 | [git-scm.com/book/zh/v2](https://git-scm.com/book/zh/v2) |
-| **Git 官方命令文档** | 最终真值源；`--help` 打不开时用它 | [git-scm.com/docs](https://git-scm.com/docs/git-submodule/zh_HANS-CN) |
+| **Git 官方命令文档** | 最终真值源；`--help` 打不开时用它 | [git-scm.com/docs](https://git-scm.com/docs) |
 | **Git 术语表** | 把"人话 ↔ Git 术语"对上，读文档不再卡在名词上 | [gitglossary（中文）](https://git-scm.com/docs/gitglossary/zh_HANS-CN) |
 
 ---
