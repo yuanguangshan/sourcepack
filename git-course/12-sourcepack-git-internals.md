@@ -43,14 +43,8 @@ type gitRunner struct {
 ```mermaid
 flowchart TD
     A["collectChangeSet()"] --> B["gitRunner.command()<br/>--no-pager -c core.quotepath=false -C &lt;dir&gt;<br/>GIT_TERMINAL_PROMPT=0 · GIT_OPTIONAL_LOCKS=0"]
-    B --> C1["git rev-parse --show-toplevel<br/>（仓库根）"]
-    B --> C2["git symbolic-ref --short HEAD<br/>（分支名；detached 时失败→回退）"]
-    B --> C3["git diff --name-status -z &lt;rev&gt;<br/>（权威清单：谁变了、怎么变的）"]
-    B --> C4["git diff --patch &lt;rev&gt; --no-textconv …<br/>（diff 正文，可能很大）"]
-    B --> C5["git ls-files --others --exclude-standard -z<br/>（未跟踪文件）"]
+    B --> C3["五条独立的 git 调用<br/>rev-parse --show-toplevel（仓库根）<br/>symbolic-ref --short HEAD（分支名）<br/>diff --name-status -z &lt;rev&gt;（权威清单）<br/>diff --patch --no-textconv（diff 正文）<br/>ls-files --others --exclude-standard -z"]
     C3 --> D["按 diff --git 切块，<br/>与清单逐条对齐"]
-    C4 --> D
-    C5 --> D
     D --> E["过滤/忽略/敏感文件/体积 gate"]
     E --> F["渲染：变更摘要 + 逐文件 diff<br/>+ 变更后全文"]
 ```

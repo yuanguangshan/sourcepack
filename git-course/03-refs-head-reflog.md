@@ -359,6 +359,7 @@ $ gx -g --dry-run -d . | grep -E "Branch|HEAD"
 ```mermaid
 flowchart LR
     subgraph L["提交链（不可变）"]
+        direction TB
         A["aa686d8"] --> B["4f2ada7<br/>重要提交"]
     end
     BR1["refs/heads/recover"] -.->|"reset --hard HEAD~1 之后<br/>不再指它"| B

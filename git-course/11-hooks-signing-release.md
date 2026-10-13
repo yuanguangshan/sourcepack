@@ -217,12 +217,12 @@ push tag v*  →  gate  →  goreleaser  →  npm-publish(+ 两段冒烟)
 **失败会停在哪一步**（`needs` 的语义就是这个）：
 
 ```mermaid
-flowchart LR
+flowchart TD
     TAG["push tag v*"] --> GATE["gate<br/>vet · gofmt · test -race · node --test"]
-    GATE -->|"通过"| GR["goreleaser<br/>构建 6 个平台归档 + changelog"]
-    GATE -->|"失败"| STOP1["中止：一个归档都不会产出<br/>（tag 已存在，修完要删 tag 重推）"]
+    GATE -->|"通过"| GR["goreleaser<br/>6 个平台归档 + changelog"]
+    GATE -->|"失败"| STOP1["中止：无归档产出"]
     GR -->|"通过"| NPM["npm-publish<br/>推包 + 装回来冒烟"]
-    GR -->|"失败"| STOP2["中止：npm 不发布<br/>（Release 可能已部分上传）"]
+    GR -->|"失败"| STOP2["中止：npm 不发布"]
     NPM --> DONE["发布完成"]
 ```
 

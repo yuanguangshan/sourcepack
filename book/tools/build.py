@@ -691,14 +691,22 @@ if (document.querySelector('.mermaid')) {{
       const theme = () => document.documentElement.style.colorScheme === 'dark' ? 'dark' : 'default';
       // 不用 startOnLoad：CDN 慢时模块在 load 事件之后才到，自动渲染不会触发
       // （实测首屏一直不出现图，切一次主题才画出来）。显式 run() 与到达时机无关。
-      mm.initialize({{startOnLoad:false, theme:theme()}});
+      //
+      // useMaxWidth:false 很关键：默认行为是把图**等比缩到容器宽度**，
+      // 于是一张 3400px 宽的依赖图在 736px 的正文栏里被压到 0.2 倍——
+      // 实测有效字号只剩 3.2px，等于没画。关掉之后按原始尺寸渲染，
+      // 超宽时由 .mermaid{{overflow-x:auto}} 横向滚动（能滚总比看不清强）。
+      const conf = {{ startOnLoad: false, theme: theme(),
+        flowchart: {{ useMaxWidth: false }}, sequence: {{ useMaxWidth: false }},
+        gitGraph: {{ useMaxWidth: false }} }};
+      mm.initialize(conf);
       // 主题开关切了之后重画（由 THEME_UI_JS 调用）
       window.__spBookThemeChanged = () => {{
         document.querySelectorAll('.mermaid').forEach(e => {{
           e.textContent = e.dataset.src || e.textContent;
           e.removeAttribute('data-processed');   // 否则 mermaid 会跳过"已处理"的节点
         }});
-        mm.initialize({{startOnLoad:false, theme:theme()}});
+        mm.initialize(conf);
         mm.run({{nodes: document.querySelectorAll('.mermaid')}});
       }};
       mm.run({{nodes: document.querySelectorAll('.mermaid')}});

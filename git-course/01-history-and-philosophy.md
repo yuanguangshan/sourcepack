@@ -75,18 +75,14 @@ aa686d8 docs: v2.0.1 记录（-h 末尾换成参数手册博客版）；还原 v
 同样三次改动（`a.txt` 改一次、`b.txt` 改一次、`a.txt` 再改一次），两种存法记的东西完全不同：
 
 ```mermaid
-flowchart LR
+flowchart TD
     subgraph D["SVN / CVS：存差异"]
-        direction LR
-        D0["初始版本"] -->|"+1 行"| D1["版本 2"] -->|"+1 行"| D2["版本 3"] -->|"+1 行"| D3["版本 4"]
-        D3 -.->|"要看完整状态？<br/>从初始版本重放全部差异"| DX["现算"]
+        direction TB
+        D0["初始"] -->|"+1 行"| D1["版本 2"] -->|"+1 行"| D2["版本 3"] -->|"+1 行"| D3["版本 4"]
     end
     subgraph S["Git：存快照"]
-        direction LR
-        S0["快照 1<br/>a.txt / b.txt"] --> S1["快照 2<br/>a.txt′ / b.txt"]
-        S1 --> S2["快照 3<br/>a.txt′ / b.txt′"]
-        S2 --> S3["快照 4<br/>a.txt″ / b.txt′"]
-        S3 -.->|"要看改了什么？<br/>两棵树现算 diff"| SX["现算"]
+        direction TB
+        S0["快照 1"] --> S1["快照 2"] --> S2["快照 3"] --> S3["快照 4"]
     end
 ```
 
