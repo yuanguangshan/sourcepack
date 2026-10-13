@@ -429,6 +429,7 @@ gx -g --dry-run -d . | grep -E "staged|Files changed"
 2. `git add` 之后又改了工作区，`git commit` 提交的是哪一版？为什么？
 3. 冲突时为什么索引里同一路径能有 3 条记录？它们分别是什么？
 4. `git status` 为什么不必读完所有文件内容就能判断谁变了？
+   〔细节在 4.2 节 `[深潜]`；跳过那节的读者按结论作答即可〕
 5. sourcepack 的 `--staged` 模式为什么可以"直接标记 Staged=true"，而不必再跑 diff？
 
 <details>
@@ -457,7 +458,7 @@ gx -g --dry-run -d . | grep -E "staged|Files changed"
    `.git/index` 的每个条目含 `ctime / mtime / dev / ino / uid / gid / size` +
    mode + blob 哈希 + 路径；`git status` 先比 stat，只有对不上的才去读内容算哈希。
    这就是上万个文件的项目里 `git status` 依然飞快的原因（代价是 racy timestamp
-   那类坑，留到第 10 章）。
+   那类坑，留到第 10.5 节）。
 
 5. **因为 `--staged` 的清单本身就来自 `git diff --cached`，"来源即证据"**
    （4.9.1、4.9.3）。清单里每一条必然满足"索引与 HEAD 不同"，所以不必再跑一次

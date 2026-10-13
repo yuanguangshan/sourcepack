@@ -394,7 +394,8 @@ Git 已经负责的部分（对象、引用、合并、忽略、传输），我�
    反向算成删除；改用本仓库已有的 `--base main`（三点语义）就对了**。
    `changeset.go` 的 `collectWorkingTree` 在 `--base` 分支先
    `g.run("merge-base", config.GitBase, "HEAD")` 再 diff 共同祖先；`main.go` 里
-   `--base` 与 `--rev` 互斥，`-h` 也写明 `--rev` 是"双点：直接比尖端"。
+   `--base` 与 `--rev` 互斥，`-h` 也写明 `--rev` 是"双点：直接比尖端"
+   （双点 vs 三点的语义见 5.6；这条 `merge-base` 在 12.3 的命令清单里，只读性见 12.6）。
    沙箱实测（main 加了 `mainonly.txt`、feature 加了 `feat.txt`，当前在 feature）：
    `-g --rev main` 报 2 条、含 `mainonly.txt deleted (+0 −1)`；
    `-g --base main` 只有 `feat.txt added`——多出来的那个删除就是它。

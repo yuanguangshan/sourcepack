@@ -279,9 +279,9 @@ GIT_TRACE_PERFORMANCE=1 git rev-list --count --all 2>&1 | tail -2
 
 **自测题**：
 
-1. `--depth=1` 为什么会让仓库体积暴涨 5 倍以上？
-2. 为什么 commit-graph 让 `rev-list` 快 3 倍，却几乎不影响 `git log -1`？
-3. bitmap 加速的是哪一侧的哪一步？为什么小仓库测不出差异？
+1. `--depth=1` 为什么会让仓库体积暴涨 5 倍以上？〔推导见 10.2 节 `[深潜]`〕
+2. 为什么 commit-graph 让 `rev-list` 快 3 倍，却几乎不影响 `git log -1`？〔推导见 10.3 节 `[深潜]`〕
+3. bitmap 加速的是哪一侧的哪一步？为什么小仓库测不出差异？〔推导见 10.4 节 `[深潜]`〕
 4. `--filter=blob:none` 在本地路径克隆时为什么被忽略？怎么让它生效？
 5. `sparse-checkout` 与 `partial clone` 分别省的是什么？
 6. sourcepack 的 `-g` 里，最大的固定开销是什么？为什么这是"刻意接受"的代价？
