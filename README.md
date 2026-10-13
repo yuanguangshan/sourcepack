@@ -12,7 +12,7 @@
 > 📘 这套课也已装订成**一本书**（5 部 12 章 + 6 份附录：术语表 / 命令速查 / 知识地图 / 延伸阅读 / [进阶主题地图](book/src/back-50-appendix-e-advanced-map.md) / [把 checklist 跑起来](book/src/back-60-appendix-f-minigx.md)）。
 > 书稿源在 [`book/`](book/src/)（`book/src/` 是元内容与附录，`git-course/` 是正文）；
 > 要 HTML / EPUB / Markdown 三种形态，先跑一次 `python3 book/tools/build.py`（零依赖，只用标准库），
-> 产物落在 `book/dist/`。
+> 产物落在 `book/dist/`。HTML 版默认跟随系统配色，右下角有**三态主题开关**（跟随系统 / 浅色 / 深色）。
 
 Sourcepack 是一个极简、高性能的工具，用于扫描项目目录并将代码合并为单个 Markdown 文件，方便你快速喂给 LLM (GPT/Claude) 或进行代码审计。
 

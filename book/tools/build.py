@@ -5,7 +5,7 @@ build.py —— 把 git-course/ 的散篇 + book/src/ 的元内容与附录，�
 
 产出（都在 book/dist/）：
   BOOK.md     单一 Markdown 书稿（可直接投喂给 LLM / 阅读器）
-  book.html   单文件 HTML 书（带侧栏目录、深色模式、离线可读）
+  book.html   单文件 HTML 书（带侧栏目录、三态主题开关、离线可读）
   book.epub   EPUB 3 电子书
 
 设计要点：
@@ -15,6 +15,10 @@ build.py —— 把 git-course/ 的散篇 + book/src/ 的元内容与附录，�
   2. **部（Part）结构**：把 12 章编入 5 个部分 + 附录，见 PARTS。
   3. **交叉引用修正**：正文里形如 `第 3 章` 的文字保持不变（书与课一致），
      形如 `](03-refs-head-reflog.md)` 的相对链接改成书内锚点。
+  4. **配色**：HTML 版默认跟随系统（prefers-color-scheme），并给出右下角
+     三态开关（跟随系统 / 浅色 / 深色），选择存 localStorage、首屏不闪。
+     色值只写一份：手动与跟随共用同一组 CSS 变量，避免两处漂移。
+     EPUB 不带开关与脚本（阅读器自己有主题），只是共用同一份 style.css。
 """
 
 import html
@@ -511,10 +515,21 @@ def build_toc_md(toc) -> str:
 # ---------------------------------------------------------------- 导出
 
 CSS = """
+/* 主题：默认跟随系统（prefers-color-scheme），另外支持手动锁定浅/深。
+   data-theme 由页面里的三态开关写入：
+     - 无属性            = 跟随系统
+     - data-theme="light" = 强制浅色（即使系统是深色）
+     - data-theme="dark"  = 强制深色
+   媒体查询里的 :not([data-theme="light"]) 就是"跟随系统且没被手动锁浅色"。
+   色值只写一份，手动与跟随共用（避免两处漂移）。 */
 :root{--bg:#fdfdfb;--fg:#22252a;--muted:#6b7280;--line:#e3e5e8;--accent:#2f6f4f;
---code-bg:#f5f6f4;--quote:#f3f6f3;--sidebar:#f7f8f6;--maxw:46rem}
-@media (prefers-color-scheme:dark){:root{--bg:#16181c;--fg:#dfe3e8;--muted:#9aa2ad;
---line:#2c3038;--accent:#7fc9a2;--code-bg:#1e2126;--quote:#1c201f;--sidebar:#1a1d21}}
+--code-bg:#f5f6f4;--quote:#f3f6f3;--sidebar:#f7f8f6;--maxw:46rem;color-scheme:light}
+:root[data-theme="dark"]{--bg:#16181c;--fg:#dfe3e8;--muted:#9aa2ad;
+--line:#2c3038;--accent:#7fc9a2;--code-bg:#1e2126;--quote:#1c201f;--sidebar:#1a1d21;
+color-scheme:dark}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#16181c;--fg:#dfe3e8;
+--muted:#9aa2ad;--line:#2c3038;--accent:#7fc9a2;--code-bg:#1e2126;--quote:#1c201f;
+--sidebar:#1a1d21;color-scheme:dark}}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--fg);
@@ -567,9 +582,70 @@ padding:1rem;margin:1.1rem 0;overflow-x:auto}
 border-radius:50%;width:2.4rem;height:2.4rem;display:grid;place-items:center;
 text-decoration:none;opacity:.45;font-size:1.1rem}
 #top:hover{opacity:.9}
-@media(max-width:60rem){nav.toc{display:none}.wrap{padding:0 .9rem;max-width:46rem}}
-@media print{nav.toc,#top{display:none}.wrap{display:block;max-width:none}
+/* 主题开关：固定在右下、回到顶部按钮的上方。手机上侧栏是隐藏的，
+   所以开关不能只放在侧栏里——它必须常驻可达。 */
+#theme{position:fixed;right:1.2rem;bottom:4.3rem;z-index:10;display:flex;gap:.1rem;
+padding:.18rem;background:var(--sidebar);border:1px solid var(--line);border-radius:999px;
+box-shadow:0 2px 10px rgba(0,0,0,.08);opacity:.5;transition:opacity .15s}
+#theme:hover,#theme:focus-within{opacity:1}
+#theme button{background:none;border:0;cursor:pointer;font:inherit;font-size:.92rem;
+line-height:1;padding:.36rem .5rem;border-radius:999px;color:var(--fg)}
+#theme button[aria-pressed="true"]{background:var(--accent);color:#fff}
+@media(max-width:60rem){nav.toc{display:none}.wrap{padding:0 .9rem;max-width:46rem}
+/* 手机上侧栏没了，主题开关是唯一的配色入口：把触控区放大到 ~43px */
+#theme{bottom:4.6rem}#theme button{min-width:2.7rem;min-height:2.7rem;font-size:1.05rem}}
+@media print{nav.toc,#top,#theme{display:none}.wrap{display:block;max-width:none}
 body{font-size:11pt}pre,table{page-break-inside:avoid}h1{page-break-before:always}}
+"""
+
+# 主题：首屏防闪。必须在 <head> 里、浏览器画第一帧之前跑完，否则深色用户会
+# 先看到一帧白底再跳成深色。只做"读选择 + 落到 <html>"，不做 UI。
+THEME_BOOT_JS = """
+(function(){var t='auto';try{t=localStorage.getItem('sp-book-theme')||'auto'}catch(e){}
+var r=document.documentElement;
+if(t==='light'||t==='dark')r.setAttribute('data-theme',t);
+var dark=t==='dark'||(t!=='light'&&window.matchMedia&&
+matchMedia('(prefers-color-scheme:dark)').matches);
+r.style.colorScheme=dark?'dark':'light';})();
+"""
+
+# 主题开关：跟随系统 / 浅色 / 深色。
+#
+# 为什么是三态而不是一个"开/关"按钮：两态开关在"系统是深色、但我想看浅色"
+# （或反过来）时无处可去——而这正是这次要解决的问题（桌面系统深色 → 一直是黑，
+# 手机浅色 → 一直是白，用户没法自己定）。
+THEME_UI_JS = """
+(function(){
+var root=document.documentElement;
+var btns=[].slice.call(document.querySelectorAll('#theme button'));
+var mq=window.matchMedia?matchMedia('(prefers-color-scheme:dark)'):null;
+var mem=null;   // localStorage 不可用时的会话内兜底（file:// 下有些浏览器会拒）
+function stored(){
+  if(mem)return mem;
+  try{return localStorage.getItem('sp-book-theme')||'auto'}catch(e){return 'auto'}
+}
+function apply(t){
+  if(t==='light'||t==='dark'){root.setAttribute('data-theme',t)}
+  else{t='auto';root.removeAttribute('data-theme')}
+  mem=t;
+  var dark=t==='dark'||(t==='auto'&&mq&&mq.matches);
+  root.style.colorScheme=dark?'dark':'light';
+  btns.forEach(function(b){
+    b.setAttribute('aria-pressed',String(b.getAttribute('data-theme-set')===t));
+  });
+  try{localStorage.setItem('sp-book-theme',t)}catch(e){}
+  // Mermaid 图是按渲染时的主题上色的，切主题后要重画（有图且库已加载时才做）
+  if(window.__spBookThemeChanged)window.__spBookThemeChanged();
+}
+btns.forEach(function(b){
+  b.addEventListener('click',function(){apply(b.getAttribute('data-theme-set'))});
+});
+// 跟随系统时，系统在页面打开期间切了也要跟着走
+if(mq&&mq.addEventListener){
+  mq.addEventListener('change',function(){if(stored()==='auto')apply('auto')});
+}
+apply(stored());
+})();
 """
 
 HTML_TPL = """<!DOCTYPE html>
@@ -581,6 +657,8 @@ HTML_TPL = """<!DOCTYPE html>
 <meta name="author" content="{author}">
 <meta name="description" content="{desc}">
 <style>{css}</style>
+<script>{theme_boot}</script>
+<noscript><style>#theme{{display:none}}</style></noscript>
 </head>
 <body>
 <div class="wrap">
@@ -594,12 +672,34 @@ HTML_TPL = """<!DOCTYPE html>
 </main>
 </div>
 <a id="top" href="#book-title" title="回到顶部">↑</a>
+<div id="theme" role="group" aria-label="配色主题">
+<button type="button" data-theme-set="auto" title="跟随系统" aria-pressed="true">🌗</button>
+<button type="button" data-theme-set="light" title="浅色" aria-pressed="false">☀️</button>
+<button type="button" data-theme-set="dark" title="深色" aria-pressed="false">🌙</button>
+</div>
 <script type="module">
 // Mermaid 只在真的有图时才加载；离线时优雅退化为代码块。
 if (document.querySelector('.mermaid')) {{
+  // 先存下源码：切主题后 mermaid 要拿它重画（渲染后元素里只剩 SVG）
+  document.querySelectorAll('.mermaid').forEach(e => {{ e.dataset.src = e.textContent; }});
   import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs')
-    .then(m => m.default.initialize({{startOnLoad:true,theme:document.documentElement
-      .style.colorScheme==='dark'?'dark':'default'}}))
+    .then(m => {{
+      const mm = m.default;
+      const theme = () => document.documentElement.style.colorScheme === 'dark' ? 'dark' : 'default';
+      // 不用 startOnLoad：CDN 慢时模块在 load 事件之后才到，自动渲染不会触发
+      // （实测首屏一直不出现图，切一次主题才画出来）。显式 run() 与到达时机无关。
+      mm.initialize({{startOnLoad:false, theme:theme()}});
+      // 主题开关切了之后重画（由 THEME_UI_JS 调用）
+      window.__spBookThemeChanged = () => {{
+        document.querySelectorAll('.mermaid').forEach(e => {{
+          e.textContent = e.dataset.src || e.textContent;
+          e.removeAttribute('data-processed');   // 否则 mermaid 会跳过"已处理"的节点
+        }});
+        mm.initialize({{startOnLoad:false, theme:theme()}});
+        mm.run({{nodes: document.querySelectorAll('.mermaid')}});
+      }};
+      mm.run({{nodes: document.querySelectorAll('.mermaid')}});
+    }})
     .catch(() => document.querySelectorAll('.mermaid').forEach(e =>
       e.style.fontFamily='monospace'));
 }}
@@ -611,6 +711,7 @@ const io=new IntersectionObserver(es=>{{for(const e of es){{if(e.isIntersecting)
   if(a)a.style.background='var(--sidebar)';}}}}}},{{rootMargin:'-10% 0px -80% 0px'}});
 document.querySelectorAll('main h1,main h2').forEach(h=>io.observe(h));
 </script>
+<script>{theme_ui}</script>
 </body>
 </html>
 """
@@ -631,6 +732,7 @@ def build_html(md_text: str, toc) -> str:
         author=html.escape(BOOK_AUTHOR),
         desc=html.escape("以 sourcepack 为标本的 Git 原理教程，12 章 + 4 附录"),
         css=CSS, toc="\n".join(nav), body=body,
+        theme_boot=THEME_BOOT_JS, theme_ui=THEME_UI_JS,
         subtitle=html.escape(BOOK_SUBTITLE), version=BOOK_VERSION,
     )
 
