@@ -9,6 +9,7 @@ node_modules
 .DS_Store
 project_snapshot.md
 git_changes.md
+project_book.md
 .codex/
 .sessions/
 .claude/settings.local.json

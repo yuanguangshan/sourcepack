@@ -4,6 +4,9 @@
 > 实测环境：macOS（Apple Silicon）、sourcepack **v1.9.0**。
 > **v2.0.0 与它的差异只有两处**：`-d` 指向非法路径改为明确报错（见第 2 节），
 > 以及 `-h` 里新增了「Examples」示例段——参数行为本身没有变化。
+> **v2.1.0 新增**：`-book` / `--book-title` 书排版（见第 3 节）、
+> `--base` / `--first-parent` 两个 git 参数（见第 4 节）；另外**单横线写法一律接受**
+> （`-book` 等价 `--book`，`-dir`/`-stats`/`-no-subdirs` 这类长参数名同理）。
 > 夹具见 [附录 A](#附录-a实测夹具)，可复现。
 > 生成产物的路径全部写在 `/tmp`，避免产物反过来污染夹具。
 
@@ -33,7 +36,9 @@
 
 | 参数 | 默认 | 作用 |
 | :--- | :--- | :--- |
-| `-o, --out` | `project_snapshot.md` | 产物路径（git 模式下默认改为 `git_changes.md`） |
+| `-o, --out` | `project_snapshot.md` | 产物路径（git 模式下默认改为 `git_changes.md`，`--book` 时改为 `project_book.md`） |
+| `-book, --book` | false | **书排版**：封面 + 目录 + 分「部」章节 + 附录（给人读，见第 3 节） |
+| `--book-title` | — | `--book` 的书名（默认用目录名） |
 | `-s, --stats` | false | 只打印多维统计，**不写文件** |
 | `--dry-run` | false | 只列出将被包含的文件，**不写文件** |
 | `-v, --verbose` | false | 打印配置与跳过明细 |
@@ -252,6 +257,75 @@ $ gx -d . -o /proc/x/y.md
 > 工具会**排除自己配置的产物文件**（实测 `project_snapshot.md` 不在待打包清单里），
 > 但不会排除其它 .md 产物——`gx -o custom.md` 之后再跑一次全量扫描，`custom.md`
 > 会作为普通文件进快照。建议产物一律写到项目外（如 `/tmp`）或用 `.gitignore` 排除。
+
+### `-book, --book` —— 书排版（给人读的 md）
+
+默认产物是"给模型读"的：结构树 + 文件清单 + 围栏代码。`-book` 换一套**给人读**的版式，
+目标是能直接在 Typora / Obsidian / VS Code 预览 / GitHub 网页版里从头读到尾：
+
+```bash
+gx -book                             # → project_book.md（与 project_snapshot.md 互不覆盖）
+gx -book -i md                       # 文档型项目：只收 md 文章，成一本纯散文书
+gx -book --book-title '《PDF 底层拆解》'  # 指定书名（默认用目录名）
+gx -book --icloud                    # 存进 iCloud Drive（文件名带 +book，不覆盖默认快照）
+```
+
+产物结构（层级：书名/部/附录 = H1，章 = H2，章内小节 = H3 起）：
+
+| 部分 | 内容 |
+| :--- | :--- |
+| 顶部 | HTML 注释一行：书名 · 文件数 · 生成器版本 · 生成时间（不渲染，便于溯源） |
+| 封面 | 书名 + 一句话说明 + 「关于本书」表（部/章数、行数、体积、估算 token、主要语言、版本） |
+| 目录 | 部不缩进、章缩进一级；每个条目是显式 `<a id>` 锚点，点击可跳 |
+| 正文 | 按顶层目录分「部」（根目录永远第一部，其余按目录名升序） |
+| 附录 A | 目录结构树（含每文件行数） |
+| 附录 B | 统计：总览 / 按目录 / 按语言（与 `-s` 同一套排序口径） |
+| 附录 C | 打包参数：过滤与忽略规则、被挡掉多少文件、**一条能复现这份书的命令** |
+
+**Markdown 文件按正文排版**，这是书排版与默认快照最实质的差别：
+
+- 章标题取该文件自己的第一个 H1（跳过 BOM、前置 HTML 注释、YAML front matter）；
+  没有 H1 就用文件路径。**工具不另起一套章号**——书稿自己编的 `第 3 章`、
+  小节号 `3.7` 才是权威，重编号会与正文里的交叉引用对不上。
+- 正文标题整体下沉，使"最小的标题级别"落到 H3（章 = H2），阅读器 outline 里
+  "章 → 节"的从属关系才成立；只下沉不上浮，最深封顶 H6。
+- 围栏代码块里的 `# 注释` **不会**被当成标题（书稿代码大量以 `#` 开头）。
+- 非 Markdown 文件保持围栏代码，围栏长度仍按正文里最长反引号串自动加长。
+
+**实测**（一个 8 篇 md、3,152 行的文档项目）：
+
+```bash
+$ cd pdf-decoding && gx -book -i md --book-title '《PDF 底层拆解》'
+✨ Done! Generated project_book.md in 2.6ms
+
+$ head -20 project_book.md
+<!-- 《PDF 底层拆解》 · 8 个文件 · 由 sourcepack v2.1.0 生成于 2026-10-13 19:26 -->
+<a id="book-title"></a>
+
+# 《PDF 底层拆解》
+
+## 可以直接读的完整快照
+> **这份产物是给人读的**：8 个文件按顶层目录分成 2 部、共 8 章 …
+| **正文规模** | 2 部 · 8 章 · 3,152 行 |
+| **体积** | 119.4 KB（估算 ~34,702 token） |
+
+## 目录
+- [根目录](#part-1)
+  - [第 1 章　设计哲学：PDF 为什么长这样](#ch-03)
+```
+
+**限制**（都是明确报错，不静默忽略）：
+
+| 情况 | 结果 |
+| :--- | :--- |
+| `-book` + `-g`/`-G` | **报错**：书排版只对全量快照有意义，变更集是给审查用的 |
+| `--book-title` 不给 `--book` | **报错**：`--book-title only applies to --book` |
+| `-book` + `-o` | `-o` 优先（默认名 `project_book.md` 只在没给 `-o` 时生效） |
+| `-book` + `-c`/`-p`/`--icloud` | 全部照旧可用：它们拿到的就是书排版的内容 |
+
+> 单横线写法一律接受：`-book` 等价 `--book`（`-stats`、`-dry-run`、`-no-subdirs` 同理）。
+> pflag 默认只认 `--`，单横线会被当成短参数簇——`-dir` 曾等于 `-d ir`、
+> `-no-subdirs` 曾等于 `-n -o subdirs`，都是静默解析成别的参数。
 
 ### `-s, --stats` —— 只统计不写文件
 
@@ -597,6 +671,17 @@ Examples:
   ...
 ```
 
+同一段里还有一组「给人读的版本」：
+
+```
+  # 给人读的版本（书排版，默认产物 project_book.md）
+  sourcepack -book                    封面 + 目录 + 按目录分「部」的章节 + 附录
+  sourcepack -book -i md              文档型项目：md 文章按正文排版（不是代码块）
+  sourcepack -book --book-title '书名' 指定书名（默认用目录名）
+  sourcepack -book -o repo-book.md    换个产物名（与 project_snapshot.md 互不覆盖）
+  sourcepack -book --icloud           存进 iCloud Drive，手机上当书读
+```
+
 help 末尾还有一行：`更多用法请参考：https://s.want.biz/sourcepack`（本手册的博客版）。
 
 示例里的命令名会跟着**实际调用的名字**变：npm 全局安装后用 `gx -h`，
@@ -647,6 +732,9 @@ git 变更模式由匹配器回溯各级父目录兜住。
 | `-g` + `-G` | **报错**：`-g/--git-diff and -G/--commits are mutually exclusive (pick one)` |
 | `--staged` / `--rev` / `--no-merges` 不给对应模式 | **报错**（不静默忽略） |
 | `-n` + `-g` | **报错**：`-n/--no-subdirs has no effect in git mode; use -m/--match or -d <subdir> instead` |
+| `-book` + `-g`/`-G` | **报错**：`--book renders a reading edition of a full snapshot; it does not apply to -g/-G change packages` |
+| `--book-title` 不给 `--book` | **报错**：`--book-title only applies to --book` |
+| `-book` + `-o` | `-o` 优先；不给 `-o` 时默认产物是 `project_book.md` |
 | `-i` + `-x` | 先按 `-i` 收窄，再按 `-x` 排除 |
 | `--dry-run` + 任意 | dry-run 优先（只列清单，不写文件、不推送） |
 

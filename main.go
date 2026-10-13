@@ -62,6 +62,8 @@ type Config struct {
 	PushURL           string
 	AuthKey           string
 	ICloud            bool
+	Book              bool   // --book：书排版（封面 / 目录 / 分「部」章节 / 附录），给人读而不是给模型读
+	BookTitle         string // --book-title：书名（默认用目录名）
 
 	// Git 模式（-g / -G）：打包变更而不是全量快照。
 	// 这些参数全部与既有的筛选/输出参数正交，可自由组合。
@@ -334,6 +336,13 @@ func printUsage(w io.Writer, fs *pflag.FlagSet) {
 	fmt.Fprintf(w, "  %s --icloud                 存到 iCloud Drive（手机可读）\n", cmd)
 	fmt.Fprintf(w, "  %s -p -u https://host/submit  推送到远端（或用 SOURCEPACK_PUSH_URL）\n", cmd)
 
+	fmt.Fprintf(w, "\n  # 给人读的版本（书排版，默认产物 project_book.md）\n")
+	fmt.Fprintf(w, "  %s -book                    封面 + 目录 + 按目录分「部」的章节 + 附录\n", cmd)
+	fmt.Fprintf(w, "  %s -book -i md              文档型项目：md 文章按正文排版（不是代码块）\n", cmd)
+	fmt.Fprintf(w, "  %s -book --book-title '书名' 指定书名（默认用目录名）\n", cmd)
+	fmt.Fprintf(w, "  %s -book -o repo-book.md    换个产物名（与 project_snapshot.md 互不覆盖）\n", cmd)
+	fmt.Fprintf(w, "  %s -book --icloud           存进 iCloud Drive，手机上当书读\n", cmd)
+
 	fmt.Fprintf(w, "\n更多用法请参考：https://s.want.biz/sourcepack\n")
 	fmt.Fprintf(w, "（完整参数手册也随包发布：PARAMETERS.md）\n")
 }
@@ -397,6 +406,8 @@ func parseFlagsInto(fs *pflag.FlagSet, args []string) Config {
 	fs.StringVar(&c.AuthKey, "auth-key", "", "X-Auth-Key for push auth (or env SOURCEPACK_AUTH_KEY)")
 	fs.BoolVarP(&c.Help, "help", "h", false, "Show this help")
 	fs.BoolVar(&c.ICloud, "icloud", false, "Save output to iCloud Documents folder")
+	fs.BoolVar(&c.Book, "book", false, "Render a reading edition: cover + TOC + chapters grouped by directory + appendices")
+	fs.StringVar(&c.BookTitle, "book-title", "", "With --book: book title (default: directory name)")
 	fs.BoolVarP(&c.All, "all", "a", false, "Include all files (disable .gitignore + built-in ignores; .gdignore still applies)")
 
 	// --- Git 变更打包（与上面的筛选/输出参数正交，可自由组合）---
@@ -410,7 +421,7 @@ func parseFlagsInto(fs *pflag.FlagSet, args []string) Config {
 	fs.BoolVar(&c.DiffOnly, "diff-only", false, "With -g/-G: emit diffs only, no full file contents")
 	fs.IntVar(&c.MaxDiffLines, "max-diff-lines", 2000, "With -g/-G: max diff lines kept per file (0 = unlimited)")
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(normalizeSingleDashLongFlags(fs, args)); err != nil {
 		// ExitOnError 的 CommandLine 在出错时已退出；能走到这里说明是
 		// ContinueOnError 的 FlagSet（单测）。错误记下来交给 validateConfig，
 		// 否则参数写错会静默拿到一份零值 Config。
@@ -449,8 +460,55 @@ func parseFlagsInto(fs *pflag.FlagSet, args []string) Config {
 	if c.gitMode() && !fs.Changed("out") {
 		c.OutputFile = "git_changes.md"
 	}
+	// 书排版也单给一个默认产物名：默认快照是给模型读的，两份产物互不覆盖。
+	if c.Book && !c.gitMode() && !fs.Changed("out") {
+		c.OutputFile = "project_book.md"
+	}
 
 	return c
+}
+
+// normalizeSingleDashLongFlags 让 `-book` 这种"单横线长参数"写法也能用。
+//
+// pflag 只把 `--book` 当长参数：单横线后面跟一长串会被当成**短参数簇**，
+// 于是 `-book` 要么报 `unknown shorthand flag: 'b'`，要么更糟——静默解析成
+// 别的参数（`-dir` = `-d ir`、`-no-subdirs` = `-n -o subdirs`、`-commits` = `-c -o mmits`）。
+// 用户没有理由知道 pflag 这条规则，而这两种失败方式都不好自查（第二种连报错都没有）。
+//
+// 规则刻意保守：只有"单横线 + 名字**精确等于**某个已注册长参数名"才改写。
+// 于是它不影响任何真正的短参数簇（`-sp`、`-ac` 不是长参数名），
+// `--` 之后的位置参数保持原样，`-dir=src` 这类带等号的写法也一并支持。
+func normalizeSingleDashLongFlags(fs *pflag.FlagSet, args []string) []string {
+	out := make([]string, 0, len(args))
+	for i, arg := range args {
+		// "--" 之后全是位置参数，pflag 不再解析，这里也不能动。
+		if arg == "--" {
+			return append(out, args[i:]...)
+		}
+		if rewritten, ok := rewriteSingleDashLongFlag(fs, arg); ok {
+			out = append(out, rewritten)
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
+}
+
+// rewriteSingleDashLongFlag 把 `-name` / `-name=value` 改写成 `--name...`，
+// 仅当 name 是已注册的长参数名。返回 ok=false 表示"保持原样"。
+func rewriteSingleDashLongFlag(fs *pflag.FlagSet, arg string) (string, bool) {
+	// 至少 "-ab" 才有讨论余地："-"（stdin）与 "-s"（短参数）都不动。
+	if len(arg) < 3 || arg[0] != '-' || arg[1] == '-' {
+		return "", false
+	}
+	name := arg[1:]
+	if eq := strings.IndexByte(name, '='); eq >= 0 {
+		name = name[:eq]
+	}
+	if fs.Lookup(name) == nil {
+		return "", false
+	}
+	return "-" + arg, true
 }
 
 // validateConfig 校验参数组合。宁可明确报错，也不要静默忽略用户给错的参数。
@@ -499,6 +557,15 @@ func validateConfig(c Config, fs *pflag.FlagSet) error {
 	}
 	if c.MaxDiffLines < 0 {
 		return fmt.Errorf("--max-diff-lines must be >= 0")
+	}
+	// 书排版（--book）是为"读一份全量快照"设计的版式；-g/-G 的产物是给
+	// 审查用的变更集（diff 为主），套上书版式只会得到一份四不像。
+	// 与其它组合一样：宁可明确报错，也不要静默忽略。
+	if c.Book && c.gitMode() {
+		return fmt.Errorf("--book renders a reading edition of a full snapshot; it does not apply to -g/-G change packages")
+	}
+	if fs.Changed("book-title") && !c.Book {
+		return fmt.Errorf("--book-title only applies to --book")
 	}
 	// -d 指向不存在或不是目录的路径时明确报错。
 	// 原来会"成功"生成一份空快照（exit 0、产物里只有一个树根）——路径打错
@@ -999,6 +1066,45 @@ func printStatsTerminal(files []FileMetadata, stats Stats) {
 	}
 }
 
+// sortedDirStats 按目录名升序返回统计表的行；sortedExtStats 按行数降序返回。
+//
+// 抽出来是因为"目录分布 / 语言分布"两张表现在有两个消费者：全量快照的 -s
+// 附录和书排版（--book）的统计附录。同一份数据在两处各排一套，迟早会出现
+// 两个顺序——读者会以为是数据不同。
+func sortedDirStats(stats Stats) []*DirStats {
+	dirs := make([]*DirStats, 0, len(stats.DirMap))
+	for _, d := range stats.DirMap {
+		dirs = append(dirs, d)
+	}
+	sort.Slice(dirs, func(i, j int) bool { return dirs[i].Path < dirs[j].Path })
+	return dirs
+}
+
+func sortedExtStats(stats Stats) []*ExtStats {
+	exts := make([]*ExtStats, 0, len(stats.ExtMap))
+	for _, e := range stats.ExtMap {
+		exts = append(exts, e)
+	}
+	// 行数降序；行数相同再按扩展名升序。
+	// 只按行数排时 sort.Slice 对并列项是不稳定的：同一份数据两次运行可能给出
+	// 两种顺序（实测终端统计表就会这样），书里的表格更不该这样。
+	sort.Slice(exts, func(i, j int) bool {
+		if exts[i].TotalLines != exts[j].TotalLines {
+			return exts[i].TotalLines > exts[j].TotalLines
+		}
+		return exts[i].Ext < exts[j].Ext
+	})
+	return exts
+}
+
+// ratio 返回 part/total 的百分比。total 为 0 时返回 0，避免打印出 "NaN%"。
+func ratio(part, total int64) float64 {
+	if total <= 0 {
+		return 0
+	}
+	return float64(part) / float64(total) * 100
+}
+
 func generateStatsContent(config Config, files []FileMetadata, stats Stats) string {
 	var buf bytes.Buffer
 	w := bufio.NewWriter(&buf)
@@ -1082,6 +1188,11 @@ func writeContent(config Config, files []FileMetadata, stats Stats, w io.Writer)
 		return writeChangeContent(config, files, stats, config.changeSet, w)
 	}
 
+	// 书排版（--book）：同一份 files/stats，换一套给人读的版式。
+	if config.Book {
+		return writeBookContent(config, files, stats, w)
+	}
+
 	bw := bufio.NewWriter(w)
 
 	fmt.Fprintf(bw, "# Project Snapshot: %s\n\n", filepath.Base(config.RootDir))
@@ -1119,41 +1230,19 @@ func writeContent(config Config, files []FileMetadata, stats Stats, w io.Writer)
 		fmt.Fprintln(bw, "### 📁 Directory Distribution")
 		fmt.Fprintln(bw, "| Directory | Files | Lines | Lines % | Size | Size % |")
 		fmt.Fprintln(bw, "| :--- | :---: | :---: | :---: | :---: | :---: |")
-		dirs := make([]*DirStats, 0, len(stats.DirMap))
-		for _, d := range stats.DirMap {
-			dirs = append(dirs, d)
-		}
-		sort.Slice(dirs, func(i, j int) bool { return dirs[i].Path < dirs[j].Path })
-		for _, d := range dirs {
-			linePct := 0.0
-			if stats.TotalLines > 0 {
-				linePct = float64(d.TotalLines) / float64(stats.TotalLines) * 100
-			}
-			sizePct := 0.0
-			if stats.TotalSize > 0 {
-				sizePct = float64(d.TotalSize) / float64(stats.TotalSize) * 100
-			}
-			fmt.Fprintf(bw, "| %s | %d | %d | %.1f%% | %.2f KB | %.1f%% |\n", d.Path, d.FileCount, d.TotalLines, linePct, float64(d.TotalSize)/1024, sizePct)
+		for _, d := range sortedDirStats(stats) {
+			fmt.Fprintf(bw, "| %s | %d | %d | %.1f%% | %.2f KB | %.1f%% |\n", d.Path, d.FileCount, d.TotalLines,
+				ratio(int64(d.TotalLines), int64(stats.TotalLines)), float64(d.TotalSize)/1024,
+				ratio(d.TotalSize, stats.TotalSize))
 		}
 
 		fmt.Fprintln(bw, "\n### 📝 Language Breakdown")
 		fmt.Fprintln(bw, "| Extension | Files | Lines | Lines % | Size | Size % |")
 		fmt.Fprintln(bw, "| :--- | :---: | :---: | :---: | :---: | :---: |")
-		exts := make([]*ExtStats, 0, len(stats.ExtMap))
-		for _, e := range stats.ExtMap {
-			exts = append(exts, e)
-		}
-		sort.Slice(exts, func(i, j int) bool { return exts[i].TotalLines > exts[j].TotalLines })
-		for _, e := range exts {
-			linePct := 0.0
-			if stats.TotalLines > 0 {
-				linePct = float64(e.TotalLines) / float64(stats.TotalLines) * 100
-			}
-			sizePct := 0.0
-			if stats.TotalSize > 0 {
-				sizePct = float64(e.TotalSize) / float64(stats.TotalSize) * 100
-			}
-			fmt.Fprintf(bw, "| %s | %d | %d | %.1f%% | %.2f KB | %.1f%% |\n", e.Ext, e.FileCount, e.TotalLines, linePct, float64(e.TotalSize)/1024, sizePct)
+		for _, e := range sortedExtStats(stats) {
+			fmt.Fprintf(bw, "| %s | %d | %d | %.1f%% | %.2f KB | %.1f%% |\n", e.Ext, e.FileCount, e.TotalLines,
+				ratio(int64(e.TotalLines), int64(stats.TotalLines)), float64(e.TotalSize)/1024,
+				ratio(e.TotalSize, stats.TotalSize))
 		}
 	}
 
@@ -1321,6 +1410,10 @@ func printConfigSummary(c Config) {
 	fmt.Printf("  %-20s %v\n", "No .gitignore:", c.NoGitignore)
 	fmt.Printf("  %-20s %v\n", "Copy to clipboard:", c.Copy)
 	fmt.Printf("  %-20s %v\n", "Push to remote:", c.Push)
+	fmt.Printf("  %-20s %v\n", "Book edition (--book):", c.Book)
+	if c.BookTitle != "" {
+		fmt.Printf("  %-20s %s\n", "Book title:", c.BookTitle)
+	}
 	if c.Push {
 		fmt.Printf("  %-20s %s\n", "Push URL:", c.PushURL)
 	}
@@ -1425,7 +1518,12 @@ func saveToICloud(config Config, files []FileMetadata, stats Stats, startTime ti
 	}
 	folderName := filepath.Base(config.RootDir)
 	dateStr := time.Now().Format("2006-01-02")
-	icloudPath := filepath.Join(icloudDir, folderName+"+"+dateStr+".md")
+	// 书排版带 +book 标记：同一份快照的两个版本不该在 iCloud 里互相覆盖。
+	edition := ""
+	if config.Book {
+		edition = "+book"
+	}
+	icloudPath := filepath.Join(icloudDir, folderName+edition+"+"+dateStr+".md")
 	outFile, err := os.Create(icloudPath)
 	if err != nil {
 		return fmt.Errorf("creating iCloud file %s: %w", icloudPath, err)
@@ -1577,10 +1675,13 @@ func pushToRemoteStreaming(config Config, files []FileMetadata, stats Stats) err
 	return uploadViaMultipart(config, tmpPath, artifactBaseName(config)+"_snapshot.md")
 }
 
-// artifactBaseName 远端推送时的文件名前缀。git 模式用 _changes 后缀，
-// 避免变更快照和全量快照在服务端互相覆盖。
+// artifactBaseName 远端推送时的文件名前缀。git 模式用 _changes 后缀、
+// 书排版用 _book 后缀，避免不同形态的产物在服务端互相覆盖。
 func artifactBaseName(config Config) string {
 	base := filepath.Base(config.RootDir)
+	if config.Book {
+		base += "_book"
+	}
 	if config.gitMode() {
 		return base + "_changes"
 	}
