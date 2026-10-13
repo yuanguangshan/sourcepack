@@ -214,6 +214,44 @@ def check_self_test_answers(md_text: str) -> list:
     return problems
 
 
+def find_stale_derived_counts() -> list:
+    """校验"派生计数"没漂：**附录份数**、**部的个数**这类"加了一份却忘了改别处"的数字。
+
+    为什么单列一条校验：这类 bug 在本仓库已复发多次——
+    新增附录 F 之后，两处 README 仍写着"5 份附录"；而提交数（150 → 153 → 169）
+    更是每提交一次就更错一点。区别在于：
+
+      * **提交数天生是快照**，自动校验不了，只能像正文那样钉在具体提交上供人复核；
+      * **附录/部的份数是"当下事实"**，任何人随时可以数，所以可以硬校验。
+
+    只查"总量陈述"（`N 份附录`、`N 部`）。变更历史表里 `| v1.0 | ...` 那种行
+    声明的是**当时**的数字，刻意跳过。
+    """
+    n_appendix = len(list(SRC.glob("back-*.md")))
+    n_parts = len(PARTS)
+    problems = []
+    patterns = [(re.compile(r"(\d+)\s*[份个]\s*附录"), n_appendix, "份附录"),
+                (re.compile(r"(\d+)\s*部(?![分门])"), n_parts, "部")]
+    for rel in ("README.md", "git-course/README.md",
+                "book/src/front-00-title.md", "book/src/front-10-preface.md",
+                "book/src/front-20-copyright.md", "book/src/back-30-appendix-c-map.md"):
+        p = ROOT / rel
+        if not p.exists():
+            continue
+        for i, line in enumerate(p.read_text(encoding="utf-8").split("\n"), 1):
+            if line.lstrip().startswith("| v"):
+                continue            # 变更历史行：声明的是当时的数字
+            for pat, actual, what in patterns:
+                for m in pat.finditer(line):
+                    if line[:m.start(1)].rstrip().endswith("第"):
+                        continue    # "第 5 部" 是序数，不是总数
+                    if int(m.group(1)) != actual:
+                        problems.append(
+                            f"{rel}:{i} 写「{m.group(0)}」，实际是 {actual} {what}"
+                            f"：{line.strip()[:46]}")
+    return problems
+
+
 def find_absolute_path_leaks(md_text: str) -> list:
     """
     找出泄漏进书稿的**作者本机绝对路径**。
@@ -793,6 +831,13 @@ def verify(md_text: str, expected_chapters: int = 12):
         problems.append(
             f"{len(stale)} 处源码行号锚点越界（源码已变，行号漂移）："
             + "; ".join(f"第 {ln} 行 {ref}（{why}）" for ln, ref, why in stale[:6]))
+
+    # 派生计数（附录份数、部的个数）必须与事实一致——"加了一份却忘改别处"。
+    stale_counts = find_stale_derived_counts()
+    if stale_counts:
+        problems.append(
+            f"{len(stale_counts)} 处派生计数与实际不符（新增/删除附录或部之后漏改了？）："
+            + "; ".join(stale_counts[:6]))
 
     return problems
 

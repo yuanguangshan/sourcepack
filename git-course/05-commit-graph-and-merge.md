@@ -34,7 +34,8 @@ tree ca33473e4e00110896dcdc9b4a56fd1c2dd76d02
 parent 196c9a76126e549ee8afd7d0bc9f2d6e731e3e4d      # ← 只有一个父
 ```
 
-**一个真实观察**（写作时 sourcepack 有 135 个提交）：**没有任何合并提交**：
+**一个真实观察**（写作时 sourcepack 有 135 个提交——恰好停在 `v2.0.1` 那一刻，
+`git rev-list --count v2.0.1` 可复核）：**没有任何合并提交**：
 
 ```bash
 $ git log --merges --oneline | wc -l
