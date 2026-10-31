@@ -91,9 +91,14 @@ func buildChangeFiles(config *Config, cs *ChangeSet) ([]FileMetadata, Stats, []S
 		}
 
 		full := filepath.Join(cs.RepoRoot, filepath.FromSlash(p))
-		info, err := os.Stat(full)
+		// 用 Lstat：拿到的是"这个路径自己"的元数据。git 对符号链接只记录
+		// 链接目标文本，从不跟随；这里必须一致，否则 git 里一个
+		// `secret -> /etc/passwd` 符号链接会把目录外的内容打进产物。
+		info, err := os.Lstat(full)
 		if err != nil {
 			noContent[p] = "Not in working tree"
+		} else if info.Mode()&os.ModeSymlink != 0 {
+			noContent[p] = "Symlink (not followed)"
 		} else if info.IsDir() {
 			noContent[p] = "Submodule or directory"
 		} else if info.Size() > config.MaxFileSize {

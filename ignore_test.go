@@ -31,6 +31,11 @@ var oraclePatterns = []string{
 	"temp?",
 	"[ab]racket.txt",
 	"keep/**/deep.txt",
+	// 否定目录与 `**` 父规则的组合：git 允许重新纳入**目录**，
+	// 但"父目录可重新纳入"不等于"内容也回来了"（见下面的回归用例）。
+	"work/**",
+	"!work/keep/",
+	"!work/keep/only.txt",
 }
 
 // oraclePaths 是被判定的路径（相对仓库根，"/" 分隔）。
@@ -75,6 +80,40 @@ var oraclePaths = []string{
 	"keep/a/deep.txt",
 	"aaaa",
 	"notdeep.txt",
+	"work/a.txt",
+	"work/keep/only.txt",
+	"work/keep/other.txt",
+	"work/keep/deep/x.txt",
+}
+
+// TestIgnoredParentDirCannotBeReIncluded（回归）：`a/**` 把整棵子树排除后，
+// `!a/b/` 只能把目录本身重新纳入，**不能**把里面的文件一起捞回来；
+// 要捞只能逐个文件显式写 `!a/b/c.txt`。
+//
+// 旧实现里 dirOnly 规则对文件也会逐级匹配父目录，于是否定目录规则成了
+// "整棵子树解除忽略"。后果是多收文件（产物里出现用户明确忽略过的内容）。
+// 真值以 git 为准：`git check-ignore a/b/d.txt` 在同样的 .gitignore 下返回忽略。
+func TestIgnoredParentDirCannotBeReIncluded(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, ".gitignore"), "a/**\n!a/b/\n!a/b/c.txt\n")
+	mustMkdir(t, filepath.Join(root, "a"))
+	mustMkdir(t, filepath.Join(root, "a", "b"))
+
+	matcher := newIgnoreMatcher(root, ".gitignore")
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"a/b/c.txt", false}, // 显式否定 → 纳入（与 git 一致）
+		{"a/b/d.txt", true},  // 只否定父目录 → 仍被 a/** 排除
+		{"a/e.txt", true},    // 未否定 → 排除
+	}
+	for _, c := range cases {
+		_, ignored, _ := matcher.ShouldIgnore(c.path, false)
+		if ignored != c.want {
+			t.Errorf("ShouldIgnore(%q) ignored = %v, want %v", c.path, ignored, c.want)
+		}
+	}
 }
 
 // TestIgnoreMatcherMatchesGitCheckIgnore 逐条与 git 对照。

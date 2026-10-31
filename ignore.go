@@ -303,19 +303,23 @@ func (r ignoreRule) matches(rel string, isDir bool) bool {
 		return false // 规则不作用于它自己所在的那个目录
 	}
 	if r.dirOnly {
-		// 目录规则命中某级目录即命中：git 里"目录被忽略 → 其中内容一并被忽略"。
-		// 遍历时会在目录上 SkipDir，但 git 变更模式没有遍历，必须在这里兜住。
-		comps := strings.Split(rel, "/")
-		n := len(comps)
+		// 目录规则只作用于**目录**：`build/` 命中目录 build，而不是它里面的文件。
+		//
+		// 文件被目录规则排除，靠的是"祖先目录被忽略 → 其中内容一并被忽略"，
+		// 这条传递由 ShouldIgnore 的祖先循环完成（git 变更模式也能走到）。
+		//
+		// 以前这里对文件也会逐级匹配父目录，于是 `!a/b/` 这种**否定**目录规则
+		// 会把 a/b 下的所有文件都"解除忽略"——比 git 多收文件。实测：
+		//   .gitignore = `a/**` + `!a/b/` + `!a/b/c.txt`
+		//   git check-ignore a/b/d.txt → 被忽略（父目录可重新纳入，但内容不行）
+		//   旧实现 → a/b/d.txt 被收进产物
+		// git 的原话：“It is not possible to re-include a file if a parent
+		// directory of that file is excluded.”——否定目录只能消除"父目录被排除"，
+		// 文件自身仍需有自己的规则命中。
 		if !isDir {
-			n-- // 文件本身不是目录，只看各级父目录
+			return false
 		}
-		for i := 1; i <= n; i++ {
-			if r.matchPath(strings.Join(comps[:i], "/")) {
-				return true
-			}
-		}
-		return false
+		return r.matchPath(rel)
 	}
 	return r.matchPath(rel)
 }

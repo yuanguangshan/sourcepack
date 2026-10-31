@@ -37,10 +37,13 @@ func TestIgnoreRuleGlobSemantics(t *testing.T) {
 		{"src/*.go", "src/main.go", false, true},
 		{"src/*.go", "src/sub/main.go", false, false}, // "*" 不跨过 "/"
 		{"src/*.go", "pkg/main.go", false, false},
-		// 末尾 /：只匹配目录，且其下内容一并命中
+		// 末尾 /：只匹配**目录**自己；其下内容由"祖先目录被忽略 → 内容一并被忽略"
+		// 的传递负责（ShouldIgnore 里的祖先循环 / 遍历时的 SkipDir）。
+		// 这两层必须分开：如果 dirOnly 规则直接命中文件，那么 `!a/b/` 这种
+		// **否定**目录规则会把 a/b 下的所有文件都解除忽略，比 git 多收文件。
 		{"build/", "build", true, true},
-		{"build/", "build/x.go", false, true},
-		{"build/", "src/build/x.go", false, true},
+		{"build/", "build/x.go", false, false},
+		{"build/", "src/build/x.go", false, false},
 		{"build/", "builder", true, false},
 	}
 	for _, tt := range tests {
@@ -435,14 +438,24 @@ func TestCleanPathList(t *testing.T) {
 	}
 }
 
+// generateAnchor 的期望值就是 GitHub 渲染后的真实锚点（github-slugger 规则）：
+// 小写 → 删标点（含 `.` `/` `\`）→ 空格换 `-`。用错就会让产物里的 TOC 全部断链。
 func TestGenerateAnchor(t *testing.T) {
 	tests := []struct {
 		input string
 		want  string
 	}{
-		{"src/main.go", "src-main-go"},
-		{"README.md", "readme-md"},
-		{"pkg\\util.js", "pkg-util-js"},
+		// 去掉点与斜杠，而不是换成 -
+		{"src/main.go", "srcmaingo"},
+		{"README.md", "readmemd"},
+		{"pkg\\util.js", "pkgutiljs"},
+		// 空格变 -
+		{"有 空格.go", "有-空格go"},
+		{"docs/a (1).md", "docsa-1md"},
+		// - 与 _ 保留
+		{"draft-01_v2.md", "draft-01_v2md"},
+		// 已经是锚点形式的不变
+		{"api-reference", "api-reference"},
 	}
 	for _, tt := range tests {
 		got := generateAnchor(tt.input)

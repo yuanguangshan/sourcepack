@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/spf13/pflag"
@@ -280,7 +281,9 @@ func run(config Config) error {
 		outFile.Close()
 		return fmt.Errorf("writing content: %w", err)
 	}
-	outFile.Close()
+	if err := closeAndCheck(outFile); err != nil {
+		return err
+	}
 	fmt.Printf("\n✨ Done! Generated %s in %v\n", config.OutputFile, time.Since(startTime))
 	return nil
 }
@@ -741,6 +744,19 @@ func scanDirectory(config Config) ([]FileMetadata, Stats, []SkippedFile) {
 			}
 		}
 		if relPath == outRel {
+			return nil
+		}
+
+		// 符号链接一律不跟随（与 git 一致：git 存的是链接目标文本，不是目标内容）。
+		// 以前这里会穿透链接读目标，实测两个后果：
+		//   1. 目录外的文件被静默打进产物（ln -s /etc/passwd link.txt 会带出整份
+		//      文件），而产物常被 -p 推到远端或贴进 LLM，等于一条外泄通道；
+		//   2. 体积上限按 lstat 尺寸算、读取却跟随链接——指向 /dev/zero 这类字符
+		//      设备（lstat 尺寸为 0）能绕过 --max-size 无限读下去，直到卡死。
+		// 用 DirEntry 的类型位判定，不额外做一次系统调用。
+		if d.Type()&fs.ModeSymlink != 0 {
+			skipped = append(skipped, SkippedFile{relPath, "Symlink (not followed)"})
+			stats.Skipped++
 			return nil
 		}
 
@@ -1356,8 +1372,30 @@ func scanBackticksInData(data []byte) int {
 	return maxRun
 }
 
+// generateAnchor 生成与 GitHub 渲染器一致的标题锚点。
+//
+// 规则取自 github-slugger（GitHub / VS Code / Typora 的锚点都跟它）：
+// 小写 → 删掉标点与符号（保留字母/数字/组合符/`-`/`_`）→ 空格换 `-`。
+//
+// 旧实现只把 `/`、`\`、`.` 换成 `-`，于是：
+//   - `src/main.go` → `#src-main-go`，GitHub 实际是 `#srcmaingo`；
+//   - `有 空格.go`  → `#有 空格-go`，带空格（GitHub 是 `#有-空格go`）。
+//
+// 产物里 TOC 的每一项都带这样的链接，等于目录全部断链。
 func generateAnchor(p string) string {
-	return strings.NewReplacer("/", "-", "\\", "-", ".", "-").Replace(strings.ToLower(p))
+	var b strings.Builder
+	b.Grow(len(p))
+	for _, r := range strings.ToLower(p) {
+		switch {
+		case r == ' ':
+			b.WriteByte('-')
+		case r == '-' || r == '_':
+			b.WriteRune(r)
+		case unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r):
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func detectLanguage(p string) string {
@@ -1532,8 +1570,22 @@ func saveToICloud(config Config, files []FileMetadata, stats Stats, startTime ti
 		outFile.Close()
 		return fmt.Errorf("writing content: %w", err)
 	}
-	outFile.Close()
+	if err := closeAndCheck(outFile); err != nil {
+		return err
+	}
 	fmt.Printf("\n✨ Done! Saved to iCloud: %s in %v\n", icloudPath, time.Since(startTime))
+	return nil
+}
+
+// closeAndCheck 关闭文件并返回关闭错误。
+//
+// 缓冲在调用方时（比如 writeContent 内部的 bufio），磁盘写满/配额超限
+// 只会在 Close 时才报错；吞掉它就等于产出一份"看起来成功、其实被截断"
+// 的产物——而这份产物正是要喂给模型/推到远端的东西。
+func closeAndCheck(f *os.File) error {
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing %s: %w", f.Name(), err)
+	}
 	return nil
 }
 
