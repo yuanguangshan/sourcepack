@@ -46,6 +46,9 @@ const (
 	bookPartLevel     = 1
 	bookChapterLevel  = 2
 	bookAppendixLevel = 1
+
+	// 超过这个大小的 Markdown 章改用流式正文（两遍读文件，但内存恒定）。
+	bookStreamThreshold = 64 * 1024
 )
 
 // 附录锚点固定写死（ASCII、稳定、不依赖标题）。章锚点是 ch-01、ch-02…，
@@ -147,6 +150,19 @@ func writeBookContent(config Config, files []FileMetadata, stats Stats, w io.Wri
 			fmt.Fprintf(bw, "%s\n\n", bookChapterMeta(ch, inlined))
 
 			if inlined {
+				// 大文件流式处理：两遍读文件（第一遍找最小标题级别，第二遍写），
+				// 但内存里只保留一行，不会把几十 MB 的 Markdown 整篇读进来。
+				if ch.title != "" && fm.Size > bookStreamThreshold {
+					wrote, err := writeMarkdownBodyStreaming(bw, fm.FullPath, bookChapterLevel+1)
+					if err != nil {
+						return fmt.Errorf("reading %s: %w", ch.relPath, err)
+					}
+					if wrote {
+						fmt.Fprintln(bw)
+					}
+					continue
+				}
+				// 小文件 / 没有 H1 的 Markdown 保持原路径（行为与旧版一致）。
 				// 正文里原本的 H1 已经提出来当章标题了，这里只写剩下的部分。
 				_, body, err := markdownChapterBody(fm.FullPath)
 				if err != nil {
@@ -593,6 +609,176 @@ func markdownChapterTitle(fullPath string) (string, error) {
 	}
 	title, _ := splitMarkdownTitle(strings.TrimPrefix(string(data), "\ufeff"))
 	return title, nil
+}
+
+// walkMarkdownBody 流式遍历 Markdown 正文：跳过 BOM、前置 HTML 注释、
+// YAML front matter 和第一个 H1，然后逐行调用 fn。
+//
+// 这套跳过逻辑必须与 splitMarkdownTitle 一致；区别只是不把正文拼成
+// 一个大字符串。找不到 H1 时返回错误（调用方只在 title 已知非空时使用）。
+func walkMarkdownBody(fullPath string, fn func(string) error) error {
+	f, err := os.Open(fullPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	r := bufio.NewReaderSize(f, 64*1024)
+	var pending string
+	hasPending := false
+	readLine := func() (string, error) {
+		if hasPending {
+			hasPending = false
+			return pending, nil
+		}
+		return r.ReadString('\n')
+	}
+	unread := func(line string) {
+		pending, hasPending = line, true
+	}
+
+	inComment, inFrontMatter := false, false
+	headerDone, skipBlank := false, false
+	bomDone := false
+	for {
+		line, err := readLine()
+		if len(line) > 0 {
+			if !bomDone {
+				line = strings.TrimPrefix(line, "\ufeff")
+				bomDone = true
+			}
+			trimmed := strings.TrimSpace(line)
+			if !headerDone {
+				switch {
+				case inComment:
+					if strings.Contains(line, "-->") {
+						inComment = false
+					}
+					goto next
+				case inFrontMatter:
+					if trimmed == "---" || trimmed == "..." {
+						inFrontMatter = false
+					}
+					goto next
+				case trimmed == "":
+					goto next
+				case strings.HasPrefix(trimmed, "<!--"):
+					if !strings.Contains(line, "-->") {
+						inComment = true
+					}
+					goto next
+				case trimmed == "---":
+					nextLine, nerr := readLine()
+					if nerr == nil || len(nextLine) > 0 {
+						if looksLikeFrontMatter([]string{line, nextLine}, 0) {
+							inFrontMatter = true
+							goto next
+						}
+						unread(nextLine)
+					}
+				}
+				if _, ok := atxHeadingText(line, 1); ok {
+					headerDone, skipBlank = true, true
+					goto next
+				}
+				headerDone = true
+			}
+			if skipBlank && strings.TrimRight(line, "\r\n") == "" {
+				goto next
+			}
+			skipBlank = false
+			if e := fn(line); e != nil {
+				return e
+			}
+		}
+	next:
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if !headerDone {
+		return fmt.Errorf("markdown title not found")
+	}
+	return nil
+}
+
+// minMarkdownHeadingLevel 流式找出正文里最小的 ATX 标题级别。
+func minMarkdownHeadingLevel(fullPath string) (int, error) {
+	minLevel := 0
+	inFence, fenceChar, fenceLen := false, byte(0), 0
+	err := walkMarkdownBody(fullPath, func(line string) error {
+		if inFence {
+			if closesFence(line, fenceChar, fenceLen) {
+				inFence = false
+			}
+			return nil
+		}
+		if c, n, ok := fenceInfo(line); ok {
+			inFence, fenceChar, fenceLen = true, c, n
+			return nil
+		}
+		if level, _, ok := parseATXHeading(line); ok && (minLevel == 0 || level < minLevel) {
+			minLevel = level
+		}
+		return nil
+	})
+	return minLevel, err
+}
+
+// writeMarkdownBodyStreaming 流式输出正文，并按 minTarget 下沉标题。
+// 返回值表示是否写入了任何正文。
+func writeMarkdownBodyStreaming(bw *bufio.Writer, fullPath string, minTarget int) (bool, error) {
+	minLevel, err := minMarkdownHeadingLevel(fullPath)
+	if err != nil {
+		return false, err
+	}
+	delta := 0
+	if minLevel > 0 {
+		delta = minTarget - minLevel
+		if delta < 0 {
+			delta = 0
+		}
+	}
+
+	wrote := false
+	var lastByte byte
+	inFence, fenceChar, fenceLen := false, byte(0), 0
+	err = walkMarkdownBody(fullPath, func(line string) error {
+		out := line
+		if inFence {
+			if closesFence(line, fenceChar, fenceLen) {
+				inFence = false
+			}
+		} else if c, n, ok := fenceInfo(line); ok {
+			inFence, fenceChar, fenceLen = true, c, n
+		} else if level, rest, ok := parseATXHeading(line); ok && delta > 0 {
+			newLevel := level + delta
+			if newLevel > 6 {
+				newLevel = 6
+			}
+			out = strings.Repeat("#", newLevel) + rest
+		}
+		if _, err := bw.WriteString(out); err != nil {
+			return err
+		}
+		wrote = true
+		if len(out) > 0 {
+			lastByte = out[len(out)-1]
+		}
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	if wrote && lastByte != '\n' {
+		if err := bw.WriteByte('\n'); err != nil {
+			return false, err
+		}
+	}
+	return wrote, nil
 }
 
 // markdownChapterBody 读一篇 Markdown，拆成"章标题"与"正文"。

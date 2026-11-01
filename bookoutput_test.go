@@ -572,3 +572,32 @@ func TestShellQuoteIfNeeded(t *testing.T) {
 		}
 	}
 }
+
+// 大 Markdown 章走流式正文：跳过注释/front matter/H1，正确下沉标题，
+// 代码块里的 # 不被误伤，且不把整篇内容读进内存。
+func TestBookStreamsLargeMarkdownBody(t *testing.T) {
+	root := t.TempDir()
+	var b strings.Builder
+	b.WriteString("<!--\n# 假标题\n-->\n\n---\ntitle: x\n---\n\n# 真标题\n\n## 第一节\n\n")
+	b.WriteString(strings.Repeat("正文行\n", 12000))
+	b.WriteString("\n```bash\n# 代码注释不是标题\n## 也不是标题\n```\n")
+	mustWrite(t, filepath.Join(root, "big.md"), b.String())
+
+	out := renderBook(t, root)
+	for _, want := range []string{
+		"## 真标题",
+		"### 第一节",
+		"正文行",
+		"# 代码注释不是标题",
+		"## 也不是标题",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("流式正文缺少 %q", want)
+		}
+	}
+	for _, bad := range []string{"## 假标题", "title: x", "## 代码注释不是标题"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("流式正文不应包含 %q", bad)
+		}
+	}
+}
