@@ -32,7 +32,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: node --test test/
+      - run: node --test test/asset-names.test.js test/wrapper.test.js test/gdx.test.js
 
   goreleaser:
     needs: gate

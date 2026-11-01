@@ -590,3 +590,121 @@ func TestShouldIgnoreFileSensitiveDefaults(t *testing.T) {
 		t.Error("--no-default-ignore 下 .env 不应被默认忽略")
 	}
 }
+
+// 输出文件必须按真实路径排除：`-o ./project_snapshot.md` 里的 "./" 不能让
+// 上一次的产物变成这一次的输入（自我污染）。
+func TestScanDirectoryExcludesOutputFileWithDotPrefix(t *testing.T) {
+	// 建在当前工作目录下，保证 root 与 CWD 同卷（Windows 上 t.TempDir 可能
+	// 在另一个盘符，filepath.Rel 会直接报错，测试就失去意义）。
+	root, err := os.MkdirTemp(".", "sp-out-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(root)
+	root, err = filepath.Abs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(root, "a.go"), "package a\n")
+	mustWrite(t, filepath.Join(root, "out.md"), "OLD SNAPSHOT\n")
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(cwd, filepath.Join(root, "out.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{RootDir: root, OutputFile: "./" + rel, MaxFileSize: 500 * 1024}
+	files, _, _ := scanDirectory(cfg)
+	for _, f := range files {
+		if f.RelPath == "out.md" {
+			t.Fatal("输出文件不应被纳入扫描结果（-o ./... 路径未归一化）")
+		}
+	}
+	if len(files) != 1 || files[0].RelPath != "a.go" {
+		t.Fatalf("只应留下 a.go，实际 %+v", files)
+	}
+}
+
+// 默认快照的 TOC/标题必须转义文件名里的 ] 与换行，并且锚点要像 GitHub
+// 那样对重复 slug 追加 -1/-2。
+func TestSnapshotTOCEscapesAndDedupesAnchors(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"A B.md", "a-b.md", "a/b.md", "ab.md", "a]b.md", "line\nbreak.md"} {
+		p := filepath.Join(root, filepath.FromSlash(name))
+		mustMkdir(t, filepath.Dir(p))
+		mustWrite(t, p, "x\n")
+	}
+	cfg := Config{RootDir: root, OutputFile: filepath.Join(t.TempDir(), "out.md"), MaxFileSize: 500 * 1024}
+	files, stats, _ := scanDirectory(cfg)
+
+	var buf bytes.Buffer
+	if err := writeContent(cfg, files, stats, &buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+
+	start := strings.Index(out, "## Table of Contents")
+	if start < 0 {
+		t.Fatalf("找不到 TOC：\n%s", out)
+	}
+	end := strings.Index(out[start:], "\n---")
+	if end < 0 {
+		t.Fatalf("找不到 TOC 结束标记：\n%s", out)
+	}
+	toc := out[start : start+end]
+
+	seen := map[string]bool{}
+	for _, line := range strings.Split(toc, "\n") {
+		i := strings.LastIndex(line, "(#")
+		if !strings.HasPrefix(line, "- [") || i < 0 || !strings.HasSuffix(line, ")") {
+			continue
+		}
+		a := line[i+2 : len(line)-1]
+		if seen[a] {
+			t.Errorf("TOC 锚点重复：%q\n%s", a, toc)
+		}
+		seen[a] = true
+	}
+	for _, want := range []string{
+		"- [A B.md](#a-bmd)",
+		"- [a-b.md](#a-bmd-1)",
+		"- [a/b.md](#abmd)",
+		"- [a\\]b.md](#abmd-1)",
+		"- [ab.md](#abmd-2)",
+		"- [line\\\\nbreak.md](#linebreakmd)",
+		"## a\\]b.md",
+		"## line\\\\nbreak.md",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("缺少转义/去重后的内容 %q\nTOC:\n%s", want, toc)
+		}
+	}
+	if strings.Contains(out, "## line\nbreak.md") {
+		t.Error("文件名里的换行把标题断成了两行")
+	}
+}
+
+// 三个默认产物名默认忽略：只排除“当前 -o”不够，跨模式运行时旧产物会被
+// 当成输入（先 gx 再 gx -book，书里会多出一章 project_snapshot.md）。
+func TestGeneratedArtifactsIgnoredByDefault(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"real.go", "project_snapshot.md", "git_changes.md", "project_book.md"} {
+		mustWrite(t, filepath.Join(root, name), "x\n")
+	}
+	out := filepath.Join(t.TempDir(), "out.md")
+	cfg := Config{RootDir: root, OutputFile: out, MaxFileSize: 500 * 1024}
+
+	files, _, _ := scanDirectory(cfg)
+	if len(files) != 1 || files[0].RelPath != "real.go" {
+		t.Fatalf("默认应只留下 real.go，实际 %+v", files)
+	}
+
+	cfg.NoDefaultIgnore = true
+	files, _, _ = scanDirectory(cfg)
+	if len(files) != 4 {
+		t.Fatalf("--no-default-ignore 下应纳入 4 个文件，实际 %+v", files)
+	}
+}

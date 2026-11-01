@@ -29,7 +29,7 @@ bash install.sh
 三个命令名**完全等效**，指向同一个二进制：
 
 ```bash
-gx            # 本机常用（另有别名 gxi/gxs/gxp/gdx，见下）
+gx            # 本机常用（gdx 内置；gxi/gxs/gxp 是可选 shell alias，见下）
 sourcepack    # 主命令（与包名一致）
 gdoc          # 快捷命令
 ```
@@ -113,7 +113,7 @@ gdoc          # 快捷命令
 | `--icloud` | 存到 iCloud Drive Documents | **优先于 `-o`** |
 | `-c, --copy` | 复制到剪贴板，**不写文件** | 目录内无产物 |
 | `-s, --stats` | 只打印统计，**不生成文件** | 目录内无产物 |
-| `--dry-run` | 预览（实际会打印统计摘要，非纯文件清单） | |
+| `--dry-run` | 预览（实际会打印统计摘要，非纯文件清单） | 与 `-c/-p/--icloud` 同用会明确报错（dry-run 不写、不复制、不推送） |
 | `-v, --verbose` | 打印配置与扫描细节 | 输出 Root/Output 等 |
 
 **远端推送**
@@ -142,7 +142,7 @@ gdoc          # 快捷命令
 |---|---|---|
 | `-g, --git-diff` | 打包未提交的改动：工作区 + 索引 vs `--rev` | 等价 `git diff HEAD` 的变更集 |
 | `--rev` | `-g` 的比较基准，任意 git revspec（默认 `HEAD`） | `-g --rev HEAD~3` |
-| `--staged` | 只看暂存区（`git diff --cached`） | 与 `git diff --cached HEAD` 一致 |
+| `--staged` | 只看暂存区（`git diff --cached`） | 与 `git diff --cached HEAD` 一致；全文取自索引，不混入未暂存改动 |
 | `-G, --commits` | 打包最近 N 个提交（`git log -N`） | `-G 5` |
 | `--no-merges` | `-G` 时排除合并提交 | `-G 5 --no-merges` |
 | `--diff-only` | 只输出 diff，不输出变更文件全文 | 输出体积显著变小 |
@@ -154,6 +154,9 @@ gdoc          # 快捷命令
 Git 模式下 `-i -x -m -X -I --max-size -o -c -p -s --dry-run --icloud -a`
 **全部照常生效**：git 只负责产出变更清单，后面的过滤、忽略、敏感文件
 gate、体积控制、渲染、剪贴板/推送都走同一条流水线。
+
+> `--dry-run` 与 `-c` / `-p` / `--icloud` 互斥：dry-run 不写、不复制、不推送，
+> 同时给会明确报错，而不是静默忽略（`-s --dry-run` 仍可用）。
 
 ### 参数优先级（实测确认）
 
@@ -167,6 +170,7 @@ gate、体积控制、渲染、剪贴板/推送都走同一条流水线。
 | `-n` + `-g`/`-G` | **明确报错**（git 模式不走目录遍历） |
 | `-book` + `-g`/`-G` | **明确报错**（书排版只对全量快照有意义；变更集是给审查用的） |
 | `-book` + `-o` | `-o` 优先（默认名 `project_book.md` 只在没给 `-o` 时生效） |
+| `--dry-run` + `-c`/`-p`/`--icloud` | **明确报错**（dry-run 不写、不复制、不推送） |
 
 ### 常用示例
 
@@ -301,7 +305,7 @@ gx -book --icloud                 # 存进 iCloud Drive，手机上当书读
 
 默认产物名是 `git_changes.md`（全量快照是 `project_snapshot.md`，两者互不覆盖）：
 
-1. **仓库信息** — 仓库根、分支、HEAD（含提交标题）、工作区是否 dirty、变更统计
+1. **仓库信息** — 仓库名（不写本机绝对路径）、分支、HEAD（含提交标题）、工作区是否 dirty、变更统计
 2. **变更摘要表** — 每个文件的状态（added/modified/deleted/renamed/untracked）、
    `+N −M` 行数、标记（`staged` / `unstaged` / `untracked` / `binary` / `diff truncated`）
 3. **提交列表** — 仅 `-G`：SHA、日期、作者、标题，合并提交有标注
@@ -310,8 +314,9 @@ gx -book --icloud                 # 存进 iCloud Drive，手机上当书读
 5. **删除 / 重命名 / 二进制文件清单**
 6. **逐文件明细** — `diff` 代码块 + **变更文件的完整内容**（`--diff-only` 可关掉）
    - `-G` 模式按提交分组，每个提交一节
-   - 全文只在同一路径**最后出现的那次**输出，并标注为
+   - 全文只在同一路径**最后出现的那次**输出；`-G` 下标注为
      `Full content (current working tree)`（历史模式下它是当前工作区的内容）
+   - `--staged` 下全文取自**索引**（`git show :path`），不会混入工作区里尚未暂存的改动
 
 ### 与 git 行为对齐的几个关键点（实测）
 
@@ -399,6 +404,10 @@ fixtures/
 > `-a` 只关闭 `.gitignore` 和内置忽略规则，不含 `.gdignore`。
 > 注意 `--help` 里 `-a` 的说明写的是 "disable all ignore rules"，
 > 与实现不符（实测确认）。
+>
+> Sourcepack 自己的三个默认产物（`project_snapshot.md`、`git_changes.md`、
+> `project_book.md`）也按内置忽略排除，避免“先跑全量、再跑书排版”时把旧产物
+> 当成一章收进去。需要把同名文件当输入时用 `-a` / `--no-default-ignore`。
 
 
 ---

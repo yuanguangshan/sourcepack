@@ -478,7 +478,7 @@ func buildBookParts(files []FileMetadata) []bookPart {
 			// 正文渲染时必须流式（可能几十 MB），不能把全文缓存在内存里等目录。
 			// 读失败不在这里报（下一遍渲染正文时会带着路径报错），这里只留空标题。
 			if isMarkdownPath(f.RelPath) {
-				if title, _, err := markdownChapterBody(f.FullPath); err == nil {
+				if title, err := markdownChapterTitle(f.FullPath); err == nil {
 					ch.title = title
 				}
 			}
@@ -579,6 +579,22 @@ func isMarkdownPath(relPath string) bool {
 //  Markdown 正文处理
 // ============================================================
 
+// markdownChapterTitle 只读文件开头一小段来取 H1，避免为了目录把整篇
+// 几十 MB 的 Markdown 读进内存。标题不在前 64 KB 时退回“用文件路径当标题”。
+func markdownChapterTitle(fullPath string) (string, error) {
+	f, err := os.Open(fullPath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, 64*1024))
+	if err != nil {
+		return "", err
+	}
+	title, _ := splitMarkdownTitle(strings.TrimPrefix(string(data), "\ufeff"))
+	return title, nil
+}
+
 // markdownChapterBody 读一篇 Markdown，拆成"章标题"与"正文"。
 //
 // 标题取文件开头的第一个 H1（跳过 BOM、前置 HTML 注释与 YAML front matter）。
@@ -655,7 +671,20 @@ func atxHeadingText(line string, wantLevel int) (string, bool) {
 	if !ok || level != wantLevel {
 		return "", false
 	}
-	text := strings.TrimSpace(strings.TrimRight(rest, "#"))
+	// 只剥 CommonMark 意义上的“closing sequence”：连续 # 必须在行尾，
+	// 且前面是空白（`## Title ###`）。不能无脑 TrimRight：
+	// `# C#` 的标题文本就是 `C#`，旧实现会把它吃掉变成 `C`。
+	rest = strings.TrimRight(rest, " \t")
+	if i := strings.LastIndexByte(rest, '#'); i >= 0 && i == len(rest)-1 {
+		j := i
+		for j > 0 && rest[j-1] == '#' {
+			j--
+		}
+		if j == 0 || rest[j-1] == ' ' || rest[j-1] == '\t' {
+			rest = rest[:j]
+		}
+	}
+	text := strings.TrimSpace(rest)
 	if text == "" {
 		return "", false
 	}

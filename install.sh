@@ -4,7 +4,8 @@
 
 INSTALL_DIR="/usr/local/bin"
 BINARY_NAME="sourcepack"
-SHORTCUT_NAMES=("gdoc" "gdx" "gx" "doc")
+SHORTCUT_NAMES=("gdoc" "gx" "doc")
+WRAPPER_NAMES=("gdx")
 SOURCE_FILE="go.mod"   # 入口是包（main.go + changeset.go + changeoutput.go）
 
 # 检查权限
@@ -16,7 +17,7 @@ fi
 # 卸载逻辑
 if [[ "$1" == "--uninstall" ]]; then
     echo "🗑 卸载 Sourcepack..."
-    for name in "${SHORTCUT_NAMES[@]}"; do
+    for name in "${SHORTCUT_NAMES[@]}" "${WRAPPER_NAMES[@]}"; do
         $USE_SUDO rm -f "$INSTALL_DIR/$name"
     done
 
@@ -25,7 +26,7 @@ if [[ "$1" == "--uninstall" ]]; then
 
     # 额外检查 ~/.local/bin 以防万一（这里原来写的是 $SHORTCUT_NAME，
     # 而变量名是数组 SHORTCUT_NAMES，于是这个分支从来没执行过）
-    for name in "${SHORTCUT_NAMES[@]}"; do
+    for name in "${SHORTCUT_NAMES[@]}" "${WRAPPER_NAMES[@]}"; do
         if [[ -f "$HOME/.local/bin/$name" ]]; then
             rm -f "$HOME/.local/bin/$name"
         fi
@@ -67,6 +68,11 @@ for name in "${SHORTCUT_NAMES[@]}"; do
     $USE_SUDO ln -sf "$INSTALL_DIR/$BINARY_NAME" "$INSTALL_DIR/$name"
 done
 
+# gdx 不是普通软链：它固定带 -s（统计模式），与 README 的语义一致。
+# 软链做不到“带预设参数”，所以这里写一个两行 shell wrapper。
+printf '#!/bin/sh\nexec "%s" -s "$@"\n' "$INSTALL_DIR/$BINARY_NAME" | $USE_SUDO tee "$INSTALL_DIR/gdx" >/dev/null
+$USE_SUDO chmod +x "$INSTALL_DIR/gdx"
+
 # 清理旧版遗留的 gd / godoc 快捷方式
 $USE_SUDO rm -f "$INSTALL_DIR/gd" "$INSTALL_DIR/godoc"
 
@@ -75,4 +81,5 @@ echo -e "\n✅ 安装完成！"
 
 echo -e "\n现在你可以运行："
 echo "  sourcepack   # 主命令（与包名一致）"
-echo "  gdoc / gdx   # 快捷命令"
+echo "  gdoc / gx    # 快捷命令"
+echo "  gdx          # 等价于 sourcepack -s（统计）"

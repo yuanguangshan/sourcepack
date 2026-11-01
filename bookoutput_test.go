@@ -262,6 +262,10 @@ func TestSplitMarkdownTitle(t *testing.T) {
 		{"只有 H1", "# 标题\n", "标题", ""},
 		{"H2 开头不算章标题", "## 小节\n正文\n", "", "## 小节\n正文\n"},
 		{"# 后没有空格不是标题", "#标题\n", "", "#标题\n"},
+		{"C# 不是 closing sequence", "# C#\n正文\n", "C#", "正文\n"},
+		{"closing sequence", "# 标题 ###\n正文\n", "标题", "正文\n"},
+		{"C# 加 closing sequence", "# C# ###\n正文\n", "C#", "正文\n"},
+		{"# 不在行尾不是 closing sequence", "# ### C\n正文\n", "### C", "正文\n"},
 		{"空文件", "", "", ""},
 	}
 	for _, tt := range tests {

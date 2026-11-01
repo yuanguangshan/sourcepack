@@ -13,7 +13,7 @@
 > 夹具见 [附录 A](#附录-a实测夹具)，可复现。
 > 生成产物的路径全部写在 `/tmp`，避免产物反过来污染夹具。
 
-三个命令名完全等效：`sourcepack`、`gx`、`gdoc`（npm 全局安装后还可自定义别名，如 `gdx` = `sourcepack -s`）。
+三个命令名完全等效：`sourcepack`、`gx`、`gdoc`。npm 全局安装还自带 `gdx`（等价于 `sourcepack -s`）；`gxi` / `gxs` / `gxp` 则是可选的 shell alias。
 
 ---
 
@@ -56,7 +56,7 @@
 | `--rev` | `HEAD` | `-g` 的比较基准（任意 revspec） |
 | `--base` | — | `-g` 时与**共同祖先**比较（`merge-base(base, HEAD)`），PR 审查口径 |
 | `--first-parent` | false | `-G` 时只看主线（`git log --first-parent`） |
-| `--staged` | false | 只打包已暂存改动（`git diff --cached`） |
+| `--staged` | false | 只打包已暂存改动（`git diff --cached`）；全文取自索引，不混入未暂存改动 |
 | `-G, --commits` | 0 | 打包最近 N 个提交 |
 | `--no-merges` | false | `-G` 时排除合并提交 |
 | `--diff-only` | false | 只给 diff，不附变更文件全文 |
@@ -112,6 +112,11 @@ $ gx -g -d src --dry-run
 > **坑（v2.0.0 起已修，见 [第 10 节](#10-边界坑与已知问题)）**：v1.9.0 里 `-d`
 > 给一个不存在的路径（或一个文件）会**成功**产出一份空快照（exit 0）。
 > v2.0.0 起明确报错并退出码 1。
+>
+> **全量模式的 ignore 根 = `-d`**：`gx -d src` 只从 `src/` 往下读
+> `.gitignore` / `.gdignore`，仓库根目录的 `.gitignore` 不会作用于 `src/`。
+> 需要继承时请从仓库根扫描，或在 `src/` 下放 `.gdignore`。`-g`/`-G` 由 git
+> 处理忽略规则，不受这条限制。
 
 ### `-i, --include` / `-x, --exclude` —— 按扩展名
 

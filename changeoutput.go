@@ -15,11 +15,13 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -39,16 +41,9 @@ func buildChangeFiles(config *Config, cs *ChangeSet) ([]FileMetadata, Stats, []S
 	matcher.addCLIPatterns(config.AdditionalIgnores)
 
 	// 输出文件自己不该出现在变更里（与全量模式一致）。
-	// 走真实路径再算相对路径，避免 -o /tmp/... 与仓库真实路径
-	// /private/tmp/... 在符号链接下对不上而漏排除。
-	outRel := filepath.ToSlash(config.OutputFile)
-	if filepath.IsAbs(config.OutputFile) {
-		outAbs := realPathOrSelf(config.OutputFile)
-		rootAbs := realPathOrSelf(config.RootDir)
-		if r, err := filepath.Rel(rootAbs, outAbs); err == nil && !strings.HasPrefix(r, "..") {
-			outRel = filepath.ToSlash(r)
-		}
-	}
+	// 统一走 outputRelPath：它会做 Abs/Clean/EvalSymlinks，避免
+	// `-o ./x.md` 或“仓库真实路径 vs 软链路径”对不上而漏排除。
+	outRel := outputRelPath(*config)
 
 	// 一次遍历建立 path → 该路径**最新一次出现**的 Change 索引。
 	//
@@ -65,6 +60,15 @@ func buildChangeFiles(config *Config, cs *ChangeSet) ([]FileMetadata, Stats, []S
 				order = append(order, ch.Path)
 				lastByPath[ch.Path] = ch
 			}
+		}
+	}
+
+	// --staged 下所有正文都来自索引。用一次 `git cat-file --batch -Z`
+	// 批量取，避免每个文件 spawn 一个 git 进程；失败时退回逐文件读取。
+	indexed := map[string]indexFile{}
+	if config.GitStaged {
+		if got, err := readIndexFiles(cs, order, config.MaxFileSize); err == nil {
+			indexed = got
 		}
 	}
 
@@ -91,39 +95,65 @@ func buildChangeFiles(config *Config, cs *ChangeSet) ([]FileMetadata, Stats, []S
 		}
 
 		full := filepath.Join(cs.RepoRoot, filepath.FromSlash(p))
-		// 用 Lstat：拿到的是"这个路径自己"的元数据。git 对符号链接只记录
-		// 链接目标文本，从不跟随；这里必须一致，否则 git 里一个
-		// `secret -> /etc/passwd` 符号链接会把目录外的内容打进产物。
-		info, err := os.Lstat(full)
-		if err != nil {
-			noContent[p] = "Not in working tree"
-		} else if info.Mode()&os.ModeSymlink != 0 {
-			noContent[p] = "Symlink (not followed)"
-		} else if info.IsDir() {
-			noContent[p] = "Submodule or directory"
-		} else if info.Size() > config.MaxFileSize {
-			noContent[p] = "Size limit"
-		} else {
-			// 正文是否输出**以对当前文件的探测为准**，不用 diff 里的二进制标记：
-			// git 的标记是"base 与 target 任一侧为二进制"，所以"旧二进制 → 新文本"
-			// 的文件会被误判成二进制而丢掉正文。探测标准已收紧到与 git 等价
-			// （前 8000 字节含 NUL，或非法 UTF-8），不会漏。
-			lineCount, isBinary, tokens, serr := scanFileStats(full, true)
+		if config.GitStaged {
+			// --staged 的正文来自索引，不是工作区。否则“只打包暂存区”
+			// 的产物里会混入尚未暂存的改动，审查者会以为它们也被提交了。
+			idx, ok := indexed[p]
+			if !ok {
+				idx = readIndexFile(cs, p, config.MaxFileSize)
+			}
 			switch {
-			case serr != nil:
-				noContent[p] = "Read error"
-			case isBinary:
+			case idx.reason != "":
+				reason := idx.reason
+				if reason == "Not in index" && ch != nil && ch.Status != "" && ch.Status[0] == 'D' {
+					reason = "File deleted"
+				}
+				noContent[p] = reason
+			case idx.binary:
 				noContent[p] = "Binary file"
 			default:
-				fm := FileMetadata{RelPath: p, FullPath: full, Size: info.Size(), LineCount: lineCount}
+				fm := FileMetadata{
+					RelPath: p, FullPath: full, Size: idx.size, LineCount: idx.lines,
+					Content: idx.content, ContentSet: true,
+				}
 				files = append(files, fm)
-				accumulateStats(&stats, fm, tokens)
+				accumulateStats(&stats, fm, idx.tokens)
+			}
+		} else {
+			// 用 Lstat：拿到的是"这个路径自己"的元数据。git 对符号链接只记录
+			// 链接目标文本，从不跟随；这里必须一致，否则 git 里一个
+			// `secret -> /etc/passwd` 符号链接会把目录外的内容打进产物。
+			info, err := os.Lstat(full)
+			if err != nil {
+				noContent[p] = "Not in working tree"
+			} else if info.Mode()&os.ModeSymlink != 0 {
+				noContent[p] = "Symlink (not followed)"
+			} else if info.IsDir() {
+				noContent[p] = "Submodule or directory"
+			} else if info.Size() > config.MaxFileSize {
+				noContent[p] = "Size limit"
+			} else {
+				// 正文是否输出**以对当前文件的探测为准**，不用 diff 里的二进制标记：
+				// git 的标记是"base 与 target 任一侧为二进制"，所以"旧二进制 → 新文本"
+				// 的文件会被误判成二进制而丢掉正文。探测标准已收紧到与 git 等价
+				// （前 8000 字节含 NUL，或非法 UTF-8），不会漏。
+				lineCount, isBinary, tokens, serr := scanFileStats(full, true)
+				switch {
+				case serr != nil:
+					noContent[p] = "Read error"
+				case isBinary:
+					noContent[p] = "Binary file"
+				default:
+					fm := FileMetadata{RelPath: p, FullPath: full, Size: info.Size(), LineCount: lineCount}
+					files = append(files, fm)
+					accumulateStats(&stats, fm, tokens)
 
-				if ch != nil && ch.Untracked && ch.Diff == "" {
-					// 未跟踪文件在 git diff 里一行都没有：摘要里的 +N 与总量
-					// 告警都只能靠数正文（--diff-only 下由合成补丁填）。
-					ch.Added = lineCount
-					ch.DiffFull = lineCount
+					if ch != nil && ch.Untracked && ch.Diff == "" {
+						// 未跟踪文件在 git diff 里一行都没有：摘要里的 +N 与总量
+						// 告警都只能靠数正文（--diff-only 下由合成补丁填）。
+						ch.Added = lineCount
+						ch.DiffFull = lineCount
+					}
 				}
 			}
 		}
@@ -187,21 +217,166 @@ func buildChangeFiles(config *Config, cs *ChangeSet) ([]FileMetadata, Stats, []S
 	return files, stats, skipped
 }
 
-// realPathOrSelf 取真实路径（解析符号链接）；失败时原样返回。
-// 输出文件可能还不存在，所以不能依赖 EvalSymlinks 成功。
+// indexFile 是索引里一个文件的读取结果。
+type indexFile struct {
+	content []byte
+	size    int64
+	lines   int
+	tokens  int
+	binary  bool
+	reason  string // 非空表示不输出正文
+}
+
+// readIndexFiles 用一次 `git cat-file --batch -Z` 批量读取索引内容。
+//
+// --staged 的“全文”必须来自索引：直接读工作区会把尚未暂存的改动带进
+// 审查快照。批量读取避免每个文件 spawn 一个 git 进程（1000 个暂存文件
+// 逐文件 git show 会多花约 10 秒）。
+//
+// 协议（-Z）：输入 `:path\0`；输出 `<sha> blob <size>\0<content>\0`。
+// 缺失对象只输出 `<name> missing\0`，没有 content 段；非 blob（子模块）
+// 有 content 段，读掉丢弃。content 里可能含 NUL，所以按 size 精确读取，
+// 不能按 NUL 切分内容。
+func readIndexFiles(cs *ChangeSet, paths []string, maxSize int64) (map[string]indexFile, error) {
+	out := make(map[string]indexFile, len(paths))
+	if len(paths) == 0 {
+		return out, nil
+	}
+	if maxSize < 0 {
+		maxSize = 0
+	}
+	g := newGitRunner(cs.RepoRoot)
+	cmd := g.command("cat-file", "--batch", "-Z")
+	var input bytes.Buffer
+	for _, p := range paths {
+		input.WriteByte(':')
+		input.WriteString(p)
+		input.WriteByte(0)
+	}
+	cmd.Stdin = &input
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	r := bufio.NewReaderSize(stdout, 64*1024)
+	fail := func(err error) (map[string]indexFile, error) {
+		_ = stdout.Close()
+		_ = cmd.Wait()
+		return nil, err
+	}
+	for _, p := range paths {
+		header, err := r.ReadString(0)
+		if err != nil {
+			return fail(fmt.Errorf("git cat-file: %w", err))
+		}
+		header = strings.TrimSuffix(header, "\x00")
+		// 缺失/歧义对象的 header 是 `<path> missing` / `<path> ambiguous`，
+		// 路径本身可能含空格；先按后缀判断，避免把路径切成多个字段。
+		if strings.HasSuffix(header, " missing") || strings.HasSuffix(header, " ambiguous") {
+			out[p] = indexFile{reason: "Not in index"}
+			continue
+		}
+		fields := strings.Fields(header)
+		if len(fields) != 3 {
+			out[p] = indexFile{reason: "Not in index"}
+			continue
+		}
+		size, err := strconv.ParseInt(fields[2], 10, 64)
+		if err != nil {
+			return fail(fmt.Errorf("git cat-file: bad size %q: %w", fields[2], err))
+		}
+		if fields[1] != "blob" {
+			// 子模块等非 blob：有 content 段，读掉并丢弃。
+			if _, err := io.CopyN(io.Discard, r, size); err != nil {
+				return fail(err)
+			}
+			if _, err := r.ReadByte(); err != nil {
+				return fail(err)
+			}
+			out[p] = indexFile{reason: "Not a blob"}
+			continue
+		}
+		if size > maxSize {
+			if _, err := io.CopyN(io.Discard, r, size); err != nil {
+				return fail(err)
+			}
+			if _, err := r.ReadByte(); err != nil {
+				return fail(err)
+			}
+			out[p] = indexFile{size: size, reason: "Size limit"}
+			continue
+		}
+		buf := make([]byte, size)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return fail(err)
+		}
+		if _, err := r.ReadByte(); err != nil { // content 后的 NUL
+			return fail(err)
+		}
+		if diffBodyLooksBinary(string(buf)) {
+			out[p] = indexFile{size: size, binary: true, reason: "Binary file"}
+			continue
+		}
+		out[p] = indexFile{
+			content: buf, size: size,
+			lines: countLinesBuffer(buf), tokens: countTokensBuffer(buf),
+		}
+	}
+	if err := cmd.Wait(); err != nil {
+		return nil, fmt.Errorf("git cat-file failed: %v: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return out, nil
+}
+
+// readIndexFile 是批量读取失败时的逐文件回退。
+func readIndexFile(cs *ChangeSet, relPath string, maxSize int64) indexFile {
+	limit := maxSize + 1
+	if limit < 1 {
+		limit = 1
+	}
+	g := newGitRunner(cs.RepoRoot)
+	out, clipped, err := g.runLimited(int(limit), "show", ":"+relPath)
+	if err != nil {
+		return indexFile{reason: "Not in index"}
+	}
+	if clipped {
+		return indexFile{reason: "Size limit"}
+	}
+	if diffBodyLooksBinary(out) {
+		return indexFile{binary: true, reason: "Binary file"}
+	}
+	b := []byte(out)
+	return indexFile{
+		content: b, size: int64(len(b)),
+		lines: countLinesBuffer(b), tokens: countTokensBuffer(b),
+	}
+}
+
+// realPathOrSelf 取绝对的真实路径（解析符号链接）；失败时尽量返回绝对路径。
+//
+// 必须先 Abs 再 EvalSymlinks：EvalSymlinks 对相对路径会原样返回相对结果，
+// 与绝对 root 做 filepath.Rel 时会误判成“在目录外”，输出文件就排除不掉。
+// 输出文件可能还不存在，所以不能依赖 EvalSymlinks 成功——此时退化成
+// “解析父目录 + 保留文件名”。
 func realPathOrSelf(p string) string {
-	if r, err := filepath.EvalSymlinks(p); err == nil {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return p
+	}
+	if r, err := filepath.EvalSymlinks(abs); err == nil {
 		return r
 	}
-	if abs, err := filepath.Abs(p); err == nil {
-		if dir, base := filepath.Split(abs); dir != "" {
-			if rdir, err := filepath.EvalSymlinks(filepath.Clean(dir)); err == nil {
-				return filepath.Join(rdir, base)
-			}
+	if dir, base := filepath.Split(abs); dir != "" {
+		if rdir, err := filepath.EvalSymlinks(filepath.Clean(dir)); err == nil {
+			return filepath.Join(rdir, base)
 		}
-		return abs
 	}
-	return p
+	return abs
 }
 
 // changeFilterReason 判定一个变更路径是否被过滤，返回原因（"" = 保留）。
@@ -258,11 +433,15 @@ func writeChangeContent(config Config, files []FileMetadata, stats Stats, cs *Ch
 		byPath[f.RelPath] = f
 	}
 
-	fmt.Fprintf(bw, "# Git Change Snapshot: %s\n\n", filepath.Base(cs.RepoRoot))
+	fmt.Fprintf(bw, "# Git Change Snapshot: %s\n\n", escapeMarkdownText(filepath.Base(cs.RepoRoot)))
 	fmt.Fprintf(bw, "> Generated by [Sourcepack](https://github.com/yuanguangshan/sourcepack) on %s\n\n", time.Now().Format("2006-01-02 15:04:05"))
 	fmt.Fprintf(bw, "> Source: `%s`\n\n", cs.Spec)
 	if config.DiffOnly {
 		fmt.Fprintln(bw, "> Mode: **diff only** — full file contents are not included (`--diff-only`).")
+		fmt.Fprintln(bw)
+	}
+	if cs.Mode == "staged" && !config.DiffOnly {
+		fmt.Fprintln(bw, "> Mode: **staged** — full contents come from the index (`git show :path`), not the working tree.")
 		fmt.Fprintln(bw)
 	}
 	if cs.PatchClipped {
@@ -278,8 +457,10 @@ func writeChangeContent(config Config, files []FileMetadata, stats Stats, cs *Ch
 	}
 
 	// ---- Repository ----
+	// 只写仓库名，不写本机绝对路径：-g 的产物经常被贴到 PR/Issue/LLM，
+	// 绝对路径会泄漏用户名与目录结构。需要完整路径时看终端输出。
 	fmt.Fprintln(bw, "## Repository")
-	fmt.Fprintf(bw, "- Root: `%s`\n", cs.RepoRoot)
+	fmt.Fprintf(bw, "- Root: %s\n", mdCode(filepath.Base(cs.RepoRoot)))
 	fmt.Fprintf(bw, "- Branch: `%s`\n", cs.Branch)
 	if cs.Head != "" {
 		fmt.Fprintf(bw, "- HEAD: `%s` %s\n", shortSHA(cs.Head), mdCell(cs.HeadSubject))

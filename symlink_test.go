@@ -156,3 +156,30 @@ func TestScanDirectorySymlinkToCharDeviceDoesNotHang(t *testing.T) {
 		}
 	}
 }
+
+// 输出路径经过符号链接目录时也必须排除：`-d /real -o /link/out.md`
+// （/link -> /real）不能因为字符串不同就把旧产物打进来。
+func TestScanDirectoryExcludesOutputThroughSymlinkedDir(t *testing.T) {
+	realRoot := t.TempDir()
+	mustWrite(t, filepath.Join(realRoot, "a.go"), "package a\n")
+	mustWrite(t, filepath.Join(realRoot, "out.md"), "OLD SNAPSHOT\n")
+
+	linkParent := t.TempDir()
+	linkRoot := filepath.Join(linkParent, "link")
+	makeSymlink(t, realRoot, linkRoot)
+
+	cfg := Config{
+		RootDir:     realRoot,
+		OutputFile:  filepath.Join(linkRoot, "out.md"),
+		MaxFileSize: 500 * 1024,
+	}
+	files, _, _ := scanDirectory(cfg)
+	for _, f := range files {
+		if f.RelPath == "out.md" {
+			t.Fatal("通过软链路径指定的输出文件不应被纳入")
+		}
+	}
+	if len(files) != 1 || files[0].RelPath != "a.go" {
+		t.Fatalf("只应留下 a.go，实际 %+v", files)
+	}
+}

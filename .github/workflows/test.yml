@@ -44,4 +44,4 @@ jobs:
         with:
           node-version: '20'
       - name: asset name tests
-        run: node --test test/
+        run: node --test test/asset-names.test.js test/wrapper.test.js test/gdx.test.js

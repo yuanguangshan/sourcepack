@@ -68,4 +68,4 @@ if (require.main === module) {
   run();
 }
 
-module.exports = { exitCodeFor };
+module.exports = { exitCodeFor, run };

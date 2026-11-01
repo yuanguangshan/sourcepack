@@ -335,6 +335,10 @@ func TestValidateConfigCombinations(t *testing.T) {
 		{[]string{"--diff-only"}, "--diff-only only applies"},
 		{[]string{"--max-diff-lines", "10"}, "--max-diff-lines only applies"},
 		{[]string{"-g", "--max-diff-lines", "-1"}, "must be >= 0"},
+		{[]string{"--max-size", "-1"}, "must be >= 0"},
+		{[]string{"--dry-run", "-c"}, "dry-run"},
+		{[]string{"--dry-run", "-p"}, "dry-run"},
+		{[]string{"--dry-run", "--icloud"}, "dry-run"},
 		{[]string{"-g", "-n"}, "--no-subdirs has no effect"},
 		{[]string{"--base", "main"}, "--base only applies"},
 		{[]string{"-g", "--base", "main", "--rev", "HEAD~1"}, "mutually exclusive"},
@@ -356,7 +360,7 @@ func TestValidateConfigCombinations(t *testing.T) {
 	for _, args := range [][]string{
 		{"-g"}, {"-g", "--staged"}, {"-g", "--rev", "HEAD~1"}, {"-G", "5", "--no-merges"},
 		{"-G", "5", "--diff-only"}, {"-g", "--max-diff-lines", "0"},
-		{"-g", "--base", "main"},
+		{"-g", "--base", "main"}, {"--dry-run"}, {"--dry-run", "-s"},
 	} {
 		fs := newTestFlagSet()
 		if err := validateConfig(parseFlagsInto(fs, args), fs); err != nil {
@@ -1054,6 +1058,51 @@ func TestGitStagedModeMarksEveryChangeStaged(t *testing.T) {
 	}
 }
 
+// --staged 的“全文”必须来自索引，不能来自工作区：否则 diff 里只有
+// 暂存的 +two，Full content 里却混进尚未暂存的 three。
+func TestGitStagedFullContentUsesIndex(t *testing.T) {
+	dir := newGitFixture(t)
+	writeFile(t, dir, "a.txt", "one\n")
+	gitIn(t, dir, "add", "a.txt")
+	gitIn(t, dir, "commit", "-q", "-m", "init")
+
+	writeFile(t, dir, "a.txt", "one\ntwo\n")
+	gitIn(t, dir, "add", "a.txt")
+	// 工作区再改一次，但不暂存。
+	writeFile(t, dir, "a.txt", "one\ntwo\nthree\n")
+
+	cfg := gitConfig(Config{GitDiff: true, GitStaged: true, MaxDiffLines: 2000}, dir)
+	cs, files, stats, _ := collectForTest(t, cfg)
+
+	var staged FileMetadata
+	for _, f := range files {
+		if f.RelPath == "a.txt" {
+			staged = f
+		}
+	}
+	if !staged.ContentSet {
+		t.Fatal("--staged 下 a.txt 应带有索引内容")
+	}
+	if got := string(staged.Content); got != "one\ntwo\n" {
+		t.Fatalf("--staged 全文应来自索引，实际 %q", got)
+	}
+
+	var buf bytes.Buffer
+	if err := writeChangeContent(cfg, files, stats, cs, &buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "+two") {
+		t.Errorf("diff 应包含暂存的 +two:\n%s", out)
+	}
+	if strings.Contains(out, "three") {
+		t.Errorf("--staged 产物里出现了未暂存的 three:\n%s", out)
+	}
+	if !strings.Contains(out, "full contents come from the index") {
+		t.Errorf("产物头部应说明全文来自索引:\n%s", out)
+	}
+}
+
 // -h 由我们自己处理：pflag 的内置 help 在 ExitOnError 下会打印
 // "pflag: help requested" 并以 2 退出，而且自定义说明整段丢失。
 func TestHelpFlagAndUsageText(t *testing.T) {
@@ -1384,6 +1433,10 @@ func TestWriteChangeContentSmoke(t *testing.T) {
 	if n := countFenceLines(out); n%2 != 0 {
 		t.Errorf("代码围栏行数为奇数(%d)，Markdown 结构被截断", n)
 	}
+	// -g 产物经常被贴到 PR/Issue/LLM，不能带本机绝对仓库路径。
+	if strings.Contains(out, dir) {
+		t.Errorf("变更快照泄漏了绝对仓库路径 %s", dir)
+	}
 }
 
 func countFenceLines(s string) int {
@@ -1442,5 +1495,31 @@ func TestSnapshotRenderingUnchangedByRefactor(t *testing.T) {
 	}
 	if strings.Contains(out, "# Git Change Snapshot") {
 		t.Error("非 git 模式不应走变更渲染")
+	}
+}
+
+// 批量读取索引内容的协议测试：路径含空格、缺失对象、含 NUL 的二进制。
+// `git cat-file --batch -Z` 的 header 对缺失对象是 `<path> missing`，
+// 路径里的空格不能把字段切乱；content 里也可能有 NUL，必须按 size 读。
+func TestReadIndexFilesBatchHandlesSpacesMissingAndBinary(t *testing.T) {
+	dir := newGitFixture(t)
+	writeFile(t, dir, "space name.txt", "hello\n")
+	writeFile(t, dir, "bin.dat", "a\x00b")
+	gitIn(t, dir, "add", "-A", "-f", ".")
+	gitIn(t, dir, "commit", "-q", "-m", "init")
+
+	cs := &ChangeSet{RepoRoot: dir}
+	got, err := readIndexFiles(cs, []string{"space name.txt", "missing file.txt", "bin.dat"}, 500*1024)
+	if err != nil {
+		t.Fatalf("readIndexFiles: %v", err)
+	}
+	if f := got["space name.txt"]; f.reason != "" || string(f.content) != "hello\n" {
+		t.Errorf("含空格路径读取错误: %+v", f)
+	}
+	if f := got["missing file.txt"]; f.reason != "Not in index" {
+		t.Errorf("缺失对象应标 Not in index，实际 %+v", f)
+	}
+	if f := got["bin.dat"]; !f.binary || f.reason != "Binary file" {
+		t.Errorf("含 NUL 的内容应判为二进制，实际 %+v", f)
 	}
 }

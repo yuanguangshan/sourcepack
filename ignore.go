@@ -395,6 +395,13 @@ var ignoreFiles = map[string]bool{
 	"composer.lock": true, "Gemfile.lock": true,
 	"tags": true, "TAGS": true, ".DS_Store": true,
 	"coverage.xml": true, "thumbs.db": true,
+
+	// Sourcepack 自己的三个默认产物。只排除当前 -o 不够：先跑 gx 再跑
+	// gx -book，书里会把 project_snapshot.md 当成一章收进去。用 -a /
+	// --no-default-ignore 可以显式纳入同名文件。
+	"project_snapshot.md": true,
+	"git_changes.md":      true,
+	"project_book.md":     true,
 }
 
 var sensitiveFileExts = map[string]bool{

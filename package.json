@@ -6,20 +6,21 @@
   "bin": {
     "sourcepack": "index.js",
     "gdoc": "index.js",
-    "gdx": "index.js",
+    "gdx": "gdx.js",
     "gx": "index.js",
     "doc": "index.js"
   },
   "scripts": {
     "postinstall": "node download-binary.js",
     "build": "VERSION=$(node -p \"require('./package.json').version\") && LDFLAGS=\"-X main.versionStr=v${VERSION}\" && echo \"Building sourcepack v${VERSION} ...\" && GOOS=darwin GOARCH=amd64 go build -ldflags \"$LDFLAGS\" -o sourcepack-darwin-amd64 . && GOOS=darwin GOARCH=arm64 go build -ldflags \"$LDFLAGS\" -o sourcepack-darwin-arm64 . && GOOS=linux GOARCH=amd64 go build -ldflags \"$LDFLAGS\" -o sourcepack-linux-amd64 . && GOOS=linux GOARCH=arm64 go build -ldflags \"$LDFLAGS\" -o sourcepack-linux-arm64 . && GOOS=windows GOARCH=amd64 go build -ldflags \"$LDFLAGS\" -o sourcepack-win-amd64.exe . && echo \"Done.\"",
-    "test": "go test ./... && node --test test/"
+    "test": "go test ./... && node --test test/asset-names.test.js test/wrapper.test.js test/gdx.test.js"
   },
   "engines": {
     "node": ">=16"
   },
   "files": [
     "index.js",
+    "gdx.js",
     "download-binary.js",
     "README.md",
     "PARAMETERS.md",
