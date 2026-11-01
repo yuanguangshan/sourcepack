@@ -708,3 +708,34 @@ func TestGeneratedArtifactsIgnoredByDefault(t *testing.T) {
 		t.Fatalf("--no-default-ignore 下应纳入 4 个文件，实际 %+v", files)
 	}
 }
+
+// 歧义目录名（build/cache/dist...）只在项目根目录默认跳过；
+// 嵌套的 src/build、pkg/cache 很可能是真源码，不能按名字一律杀掉。
+func TestDefaultIgnoreAmbiguousDirsOnlyAtRoot(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"real.go":               "package real\n",
+		"build/a.go":            "package build\n",
+		"src/build/b.go":        "package build\n",
+		"cache/c.go":            "package cache\n",
+		"pkg/cache/d.go":        "package cache\n",
+		"node_modules/x.js":     "x\n",
+		"src/node_modules/y.js": "y\n",
+	}
+	for rel, content := range files {
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		mustMkdir(t, filepath.Dir(p))
+		mustWrite(t, p, content)
+	}
+	cfg := Config{RootDir: root, OutputFile: filepath.Join(t.TempDir(), "out.md"), MaxFileSize: 500 * 1024}
+	got, _, _ := scanDirectory(cfg)
+
+	var names []string
+	for _, f := range got {
+		names = append(names, f.RelPath)
+	}
+	want := []string{"pkg/cache/d.go", "real.go", "src/build/b.go"}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Fatalf("默认忽略目录范围不对：got %v, want %v", names, want)
+	}
+}

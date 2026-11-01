@@ -408,6 +408,10 @@ fixtures/
 > Sourcepack 自己的三个默认产物（`project_snapshot.md`、`git_changes.md`、
 > `project_book.md`）也按内置忽略排除，避免“先跑全量、再跑书排版”时把旧产物
 > 当成一章收进去。需要把同名文件当输入时用 `-a` / `--no-default-ignore`。
+>
+> 内置忽略分两档：`node_modules` / `vendor` / `__pycache__` 等任意深度跳过；
+> `build` / `dist` / `cache` / `logs` / `tmp` / `bin` 等歧义目录只在**项目根目录**
+> 跳过，`src/build/`、`pkg/cache/` 这类嵌套目录会保留。
 
 
 ---

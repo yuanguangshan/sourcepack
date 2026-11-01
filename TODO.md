@@ -95,9 +95,9 @@ spawn 约 8 个 git 进程（每个约 11ms），光进程开销就 ~90ms，比�
   收益只剩"全局 `core.excludesFile`、`.git/info/exclude` 自动生效"和
   少维护一份实现。代价是要处理 `-a`（必须绕开 git 的 exclude）、子模块
   （`git ls-files` 只给 gitlink，不进子模块内容）、以及两条来源一致性。
-- 默认忽略列表的**收窄**：`bin`/`release`/`logs`/`cache`/`tmp` 这些歧义大的
-  目录名（任意深度匹配）仍在默认忽略里，v1.8.2 起会报告被跳过的目录名，
-  但"该不该默认跳过 `pkg/cache/`"仍待定。
+- ~~默认忽略列表的收窄~~：已把 `build`/`dist`/`cache`/`logs`/`tmp`/`bin`
+  等歧义目录改成**只在根目录跳过**；`node_modules`/`vendor`/`__pycache__`
+  等几乎不可能是有意义源码的目录仍任意深度跳过。`pkg/cache/` 现在会保留。
 
 ## 4. `runLimited` 的峰值内存
 

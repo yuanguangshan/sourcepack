@@ -822,7 +822,7 @@ nope/
 | :--- | :--- | :--- |
 | ~~`-c` 失败时误报成功~~ | ~~剪贴板没拿到内容，终端却说已复制~~ | **已修复**：`cmd.Wait()` 的错误不再丢弃，剪贴板命令失败时返回错误（附回归用例） |
 | 非 UTF-8 文本（GBK 等）按二进制丢弃 | 老项目源码会整文件消失，只显示 `[Binary file]` | 为守住"产物永远是合法 UTF-8"的不变量；可改进为区分 `Non-UTF-8 text` 与 `Binary`，或做转码 |
-| 默认忽略目录较激进 | `pkg/cache/`、`scripts/release/`、`bin/`、`logs/` 等按目录名任意深度跳过 | 这些目录里若放着真代码会被跳过；`-s` 的 `Ignored dirs` 会列出来，可用 `--no-default-ignore` 关闭 |
+| ~~默认忽略目录较激进~~ | ~~`pkg/cache/`、`scripts/release/`、`bin/`、`logs/` 等按目录名任意深度跳过~~ | **已收窄**：`build`/`cache`/`dist`/`logs` 等歧义目录只在项目根目录跳过；`node_modules`/`vendor` 等仍任意深度。`-s` 的 `Ignored dirs` 会列出实际跳过的目录 |
 | 敏感文件只按文件名判断 | 写在 `config.go`、`docker-compose.yml` 里的 token 不会被拦 | `-p` 推送源码前请自行确认 |
 | 提交信息只取标题 | `-G` 产物里看不到提交正文（`%b`），而"为什么这么改"通常写在正文里 | 实测确认；取 `%s` 不取 `%b` |
 | `.env.example` 等模板已放行 | 模板文件按约定不含真值 | v1.8.2 起 |

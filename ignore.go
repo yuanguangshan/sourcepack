@@ -414,18 +414,29 @@ func segmentMatch(pat, name string) bool {
 //  内置忽略表与敏感文件
 // ============================================================
 
+// ignoreDirs 是“任意深度都安全跳过”的目录名：依赖目录、IDE 缓存、
+// Python 缓存等。它们几乎不可能是有意义的源码目录。
 var ignoreDirs = map[string]bool{
 	".git": true, ".idea": true, ".vscode": true, ".svn": true, ".hg": true,
-	"node_modules": true, "vendor": true, "dist": true, "build": true,
-	"target": true, "bin": true, "out": true, "release": true, "debug": true,
+	"node_modules": true, "vendor": true,
 	"__pycache__": true, ".pytest_cache": true, ".tox": true,
-	".env": true, ".venv": true, "venv": true, "env": true,
+	".env": true, ".venv": true, "venv": true,
 	"Pods": true, "Carthage": true, "CocoaPods": true,
-	"obj": true, "ipch": true, "Debug": true, "Release": true,
-	"x64": true, "x86": true, "arm64": true,
+	"obj": true, "ipch": true,
 	".gradle": true, ".sonar": true, ".scannerwork": true,
-	"logs": true, "tmp": true, "temp": true, "cache": true,
 	".history": true, ".nyc_output": true, ".coverage": true,
+}
+
+// ignoreDirsRootOnly 是歧义较大的目录名：只在项目根目录跳过。
+// `src/build/`、`pkg/cache/`、`services/release/` 很可能是真源码；
+// 以前它们被任意深度跳过，导致“产物里少文件”且用户只能用
+// --no-default-ignore 整体关闭。根目录的 build/、dist/、cache/ 仍按
+// 常规构建产物处理。
+var ignoreDirsRootOnly = map[string]bool{
+	"dist": true, "build": true, "target": true, "bin": true, "out": true,
+	"release": true, "debug": true, "Debug": true, "Release": true,
+	"logs": true, "tmp": true, "temp": true, "cache": true, "env": true,
+	"x64": true, "x86": true, "arm64": true,
 }
 
 var ignoreFiles = map[string]bool{
@@ -482,8 +493,14 @@ func isSensitiveFile(name string) bool {
 
 func shouldIgnoreDir(relPath string, config Config, matcher *ignoreMatcher) bool {
 	name := filepath.Base(relPath)
-	if !config.NoDefaultIgnore && ignoreDirs[name] {
-		return true
+	if !config.NoDefaultIgnore {
+		if ignoreDirs[name] {
+			return true
+		}
+		// 歧义目录只在根目录跳过；嵌套的 src/build、pkg/cache 保留。
+		if !strings.Contains(relPath, "/") && ignoreDirsRootOnly[name] {
+			return true
+		}
 	}
 	if matcher != nil {
 		if _, ignore := matcher.MatchCLI(relPath, true); ignore {

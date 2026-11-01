@@ -383,8 +383,12 @@ func realPathOrSelf(p string) string {
 func changeFilterReason(relPath string, config Config, matcher *ignoreMatcher) string {
 	if !config.NoDefaultIgnore {
 		parts := strings.Split(relPath, "/")
-		for _, part := range parts[:len(parts)-1] {
+		for i, part := range parts[:len(parts)-1] {
 			if ignoreDirs[part] {
+				return "Default ignore dir: " + part
+			}
+			// 根目录下的 build/dist/cache 等仍跳过；嵌套目录不按名字跳过。
+			if i == 0 && ignoreDirsRootOnly[part] {
 				return "Default ignore dir: " + part
 			}
 		}
