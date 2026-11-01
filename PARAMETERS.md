@@ -113,12 +113,10 @@ $ gx -g -d src --dry-run
 > 给一个不存在的路径（或一个文件）会**成功**产出一份空快照（exit 0）。
 > v2.0.0 起明确报错并退出码 1。
 >
-> **全量模式的 ignore 根 = `-d`**：`gx -d src` 只从 `src/` 往下读
-> `.gitignore` / `.gdignore`，仓库根目录的 `.gitignore` 不会作用于 `src/`。
-> 需要继承时请从仓库根扫描，或在 `src/` 下放 `.gdignore`。`-g`/`-G` 由 git
-> 处理忽略规则，不受这条限制。
+> **全量模式的 ignore 根**：会自动向上找到 git 仓库根，并继承父级
+> `.gitignore` / `.gdignore`；不是 git 仓库或没装 git 时，ignore 根就是
+> `-d`。`-I` 仍严格相对扫描根解释。`-g`/`-G` 由 git 处理忽略规则，不受这条限制。
 >
-> 现在全量模式也会自动找到仓库根并继承父级 `.gitignore` / `.gdignore`。
 > 如果父级规则把 `-d` 根整个排除（例如仓库根写 `src/`），扫描结果会为空；
 > 需要强行扫描时用 `-a` / `--no-gitignore`。
 
