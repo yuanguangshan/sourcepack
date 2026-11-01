@@ -544,6 +544,17 @@ func TestSortedStatsAreDeterministic(t *testing.T) {
 	if strings.Join(dirs, ",") != "doc,src" {
 		t.Errorf("目录排序应为路径升序：%v", dirs)
 	}
+
+	// 终端/统计报告用的“按行数”排序也必须有路径 tie-breaker。
+	for i := 0; i < 20; i++ {
+		var byLines []string
+		for _, d := range sortedDirStatsByLines(stats) {
+			byLines = append(byLines, d.Path)
+		}
+		if strings.Join(byLines, ",") != "doc,src" {
+			t.Fatalf("按行数的目录排序不确定：%v", byLines)
+		}
+	}
 }
 
 func TestShellQuoteIfNeeded(t *testing.T) {

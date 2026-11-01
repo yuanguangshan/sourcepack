@@ -1076,8 +1076,13 @@ func printStatsTerminal(files []FileMetadata, stats Stats) {
 			strings.Join(stats.IgnoredDirNames, ", "), moreSuffix(stats.IgnoredDirs, len(stats.IgnoredDirNames)))
 	}
 
-	// 1. Top Files by Line Count
-	sort.Slice(files, func(i, j int) bool { return files[i].LineCount > files[j].LineCount })
+	// 1. Top Files by Line Count（行数相同按路径升序，保证两次运行顺序一致）
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].LineCount != files[j].LineCount {
+			return files[i].LineCount > files[j].LineCount
+		}
+		return files[i].RelPath < files[j].RelPath
+	})
 	fmt.Printf("\n%-45s %12s %12s\n", "🔝 Top Files (by Lines):", "Lines", "Size")
 	fmt.Printf("%-45s %12s %12s\n", "---------------------------------------------", "-----", "----")
 	for i := 0; i < len(files) && i < 5; i++ {
@@ -1085,11 +1090,7 @@ func printStatsTerminal(files []FileMetadata, stats Stats) {
 	}
 
 	// 2. Directory Dimension
-	dirs := make([]*DirStats, 0, len(stats.DirMap))
-	for _, d := range stats.DirMap {
-		dirs = append(dirs, d)
-	}
-	sort.Slice(dirs, func(i, j int) bool { return dirs[i].TotalLines > dirs[j].TotalLines })
+	dirs := sortedDirStatsByLines(stats)
 	fmt.Printf("\n%-30s %8s %12s %10s %12s %10s\n", "📁 Folder Dimension:", "Files", "Lines", "Lines %", "Size", "Size %")
 	fmt.Printf("%-30s %8s %12s %10s %12s %10s\n", "------------------------------", "-------", "-----------", "-------", "-----------", "-------")
 	for i := 0; i < len(dirs) && i < 10; i++ {
@@ -1106,11 +1107,7 @@ func printStatsTerminal(files []FileMetadata, stats Stats) {
 	}
 
 	// 3. Language Dimension
-	exts := make([]*ExtStats, 0, len(stats.ExtMap))
-	for _, e := range stats.ExtMap {
-		exts = append(exts, e)
-	}
-	sort.Slice(exts, func(i, j int) bool { return exts[i].TotalLines > exts[j].TotalLines })
+	exts := sortedExtStats(stats)
 	fmt.Printf("\n%-15s %8s %12s %10s %12s %10s\n", "📝 Language:", "Files", "Lines", "Lines %", "Size", "Size %")
 	fmt.Printf("%-15s %8s %12s %10s %12s %10s\n", "---------------", "-------", "-----------", "-------", "-----------", "-------")
 	for _, e := range exts {
@@ -1138,6 +1135,23 @@ func sortedDirStats(stats Stats) []*DirStats {
 		dirs = append(dirs, d)
 	}
 	sort.Slice(dirs, func(i, j int) bool { return dirs[i].Path < dirs[j].Path })
+	return dirs
+}
+
+// sortedDirStatsByLines 按行数降序、路径升序返回目录统计。
+// 终端和 -s -p 的统计报告用这个；书排版用路径升序（sortedDirStats），
+// 两种展示目的不同，但各自内部必须确定。
+func sortedDirStatsByLines(stats Stats) []*DirStats {
+	dirs := make([]*DirStats, 0, len(stats.DirMap))
+	for _, d := range stats.DirMap {
+		dirs = append(dirs, d)
+	}
+	sort.Slice(dirs, func(i, j int) bool {
+		if dirs[i].TotalLines != dirs[j].TotalLines {
+			return dirs[i].TotalLines > dirs[j].TotalLines
+		}
+		return dirs[i].Path < dirs[j].Path
+	})
 	return dirs
 }
 
@@ -1185,8 +1199,13 @@ func generateStatsContent(config Config, files []FileMetadata, stats Stats) stri
 	}
 	fmt.Fprintln(w)
 
-	// Top Files
-	sort.Slice(files, func(i, j int) bool { return files[i].LineCount > files[j].LineCount })
+	// Top Files（行数相同按路径升序）
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].LineCount != files[j].LineCount {
+			return files[i].LineCount > files[j].LineCount
+		}
+		return files[i].RelPath < files[j].RelPath
+	})
 	fmt.Fprintln(w, "## Top Files (by Lines)")
 	fmt.Fprintln(w, "| File | Lines | Size |")
 	fmt.Fprintln(w, "| :--- | ---: | ---: |")
@@ -1196,11 +1215,7 @@ func generateStatsContent(config Config, files []FileMetadata, stats Stats) stri
 	fmt.Fprintln(w)
 
 	// Directory Dimension
-	dirs := make([]*DirStats, 0, len(stats.DirMap))
-	for _, d := range stats.DirMap {
-		dirs = append(dirs, d)
-	}
-	sort.Slice(dirs, func(i, j int) bool { return dirs[i].TotalLines > dirs[j].TotalLines })
+	dirs := sortedDirStatsByLines(stats)
 	fmt.Fprintln(w, "## Directory Distribution")
 	fmt.Fprintln(w, "| Directory | Files | Lines | Lines % | Size | Size % |")
 	fmt.Fprintln(w, "| :--- | ---: | ---: | ---: | ---: | ---: |")
@@ -1218,11 +1233,7 @@ func generateStatsContent(config Config, files []FileMetadata, stats Stats) stri
 	fmt.Fprintln(w)
 
 	// Language Dimension
-	exts := make([]*ExtStats, 0, len(stats.ExtMap))
-	for _, e := range stats.ExtMap {
-		exts = append(exts, e)
-	}
-	sort.Slice(exts, func(i, j int) bool { return exts[i].TotalLines > exts[j].TotalLines })
+	exts := sortedExtStats(stats)
 	fmt.Fprintln(w, "## Language Breakdown")
 	fmt.Fprintln(w, "| Extension | Files | Lines | Lines % | Size | Size % |")
 	fmt.Fprintln(w, "| :--- | ---: | ---: | ---: | ---: | ---: |")
