@@ -117,6 +117,10 @@ $ gx -g -d src --dry-run
 > `.gitignore` / `.gdignore`，仓库根目录的 `.gitignore` 不会作用于 `src/`。
 > 需要继承时请从仓库根扫描，或在 `src/` 下放 `.gdignore`。`-g`/`-G` 由 git
 > 处理忽略规则，不受这条限制。
+>
+> 现在全量模式也会自动找到仓库根并继承父级 `.gitignore` / `.gdignore`。
+> 如果父级规则把 `-d` 根整个排除（例如仓库根写 `src/`），扫描结果会为空；
+> 需要强行扫描时用 `-a` / `--no-gitignore`。
 
 ### `-i, --include` / `-x, --exclude` —— 按扩展名
 

@@ -55,6 +55,11 @@ type ignoreMatcher struct {
 	cache map[string][]ignoreRule
 	cli   []ignoreRule // -I/--ignore，优先级最高
 
+	// scanPrefix 是扫描根相对 root 的路径（"" 表示 root 就是扫描根）。
+	// 例：在仓库根执行 `gx -d src`，root=仓库根、scanPrefix="src"。
+	// 这样父级 .gitignore/.gdignore 也能生效，而 -I 仍按扫描根解释。
+	scanPrefix string
+
 	// 目录判定结果缓存。遍历是"先目录、后其内容"，所以每个目录只会真正
 	// 计算一次；文件查"父目录是否被忽略"时直接命中，避免深目录变成 O(深度²)。
 	dirCache map[string]dirVerdict
@@ -75,7 +80,38 @@ func newIgnoreMatcher(root string, names ...string) *ignoreMatcher {
 	}
 }
 
-// addCLIPatterns 追加命令行模式（相对 root 生效，优先级最高）。
+// setScanPrefix 设置扫描根相对 root 的路径（slash 风格，"" 表示同一层）。
+func (m *ignoreMatcher) setScanPrefix(prefix string) {
+	m.scanPrefix = strings.Trim(filepath.ToSlash(prefix), "/")
+}
+
+// rulePath 把“相对扫描根”的路径换算成“相对 ignore root”的路径。
+func (m *ignoreMatcher) rulePath(scanRel string) string {
+	if m.scanPrefix == "" {
+		return scanRel
+	}
+	if scanRel == "" || scanRel == "." {
+		return m.scanPrefix
+	}
+	return m.scanPrefix + "/" + scanRel
+}
+
+// scanPath 是 rulePath 的逆运算：把“相对 ignore root”的路径换回扫描根相对。
+// CLI 模式（-I）始终按扫描根解释，所以 decide 里只对 CLI 用这个值。
+func (m *ignoreMatcher) scanPath(ruleRel string) string {
+	if m.scanPrefix == "" {
+		return ruleRel
+	}
+	if ruleRel == m.scanPrefix {
+		return "."
+	}
+	if strings.HasPrefix(ruleRel, m.scanPrefix+"/") {
+		return ruleRel[len(m.scanPrefix)+1:]
+	}
+	return ruleRel
+}
+
+// addCLIPatterns 追加命令行模式（相对扫描根生效，优先级最高）。
 func (m *ignoreMatcher) addCLIPatterns(patterns []string) {
 	for _, p := range patterns {
 		if r, ok := parseIgnoreLine(p); ok {
@@ -90,13 +126,14 @@ func (m *ignoreMatcher) addCLIPatterns(patterns []string) {
 // 多条规则命中时"最后一条生效"，与 git 一致；来源字符串用于把
 // "被谁排除的"如实告诉用户（-v / git 模式的排除清单）。
 func (m *ignoreMatcher) ShouldIgnore(relPath string, isDir bool) (applies, ignored bool, source string) {
-	relPath = strings.TrimPrefix(filepath.ToSlash(relPath), "./")
+	scanRel := strings.TrimPrefix(filepath.ToSlash(relPath), "./")
+	ruleRel := m.rulePath(scanRel)
 	if isDir {
-		v := m.dirVerdict(relPath)
+		v := m.dirVerdict(ruleRel)
 		return v.applies, v.ignored, v.source
 	}
 
-	applies, ignored, source = m.decide(relPath, false)
+	applies, ignored, source = m.decide(ruleRel, false)
 	if ignored {
 		return applies, ignored, source
 	}
@@ -104,7 +141,7 @@ func (m *ignoreMatcher) ShouldIgnore(relPath string, isDir bool) (applies, ignor
 	// （git 的原话：不能重新纳入"父目录已被排除"的文件）。
 	// 遍历模式靠 SkipDir 达到同样效果，但 git 变更模式没有遍历，必须在这里兜住。
 	// 例：.gitignore 里 a/**/b，则 a/b/c 被忽略，因为 a/b 这一级是目录且命中了规则。
-	comps := strings.Split(relPath, "/")
+	comps := strings.Split(ruleRel, "/")
 	for i := 1; i < len(comps); i++ {
 		if v := m.dirVerdict(strings.Join(comps[:i], "/")); v.ignored {
 			return true, true, v.source
@@ -148,8 +185,9 @@ func (m *ignoreMatcher) decide(relPath string, isDir bool) (applies, ignored boo
 			}
 		}
 	}
+	cliRel := m.scanPath(relPath)
 	for _, r := range m.cli {
-		if r.matches(relPath, isDir) {
+		if r.matches(cliRel, isDir) {
 			applies = true
 			ignored = !r.negate
 			source = "-I/--ignore"

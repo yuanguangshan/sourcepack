@@ -39,9 +39,19 @@ jobs:
             exit 1
           fi
       - run: go test -race ./...
-      # npm 侧：归档名 / 落地名一致性（Windows 曾因 win32 vs windows 404）
+
+  # npm 侧单独跑，避免把 Go 的 3×3 矩阵再乘上 Node 版本。
+  # Node 22 曾让 `node --test test/` 失败（把目录当模块解析），所以这里
+  # 同时测 20/22/24，并固定用显式文件列表（Windows PowerShell 不展开 glob）。
+  node-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ['20', '22', '24']
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-      - name: asset name tests
-        run: node --test test/asset-names.test.js test/wrapper.test.js test/gdx.test.js
+          node-version: ${{ matrix.node-version }}
+      - run: node --test test/asset-names.test.js test/wrapper.test.js test/gdx.test.js

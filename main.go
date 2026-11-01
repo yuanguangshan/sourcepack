@@ -664,6 +664,31 @@ func cleanPathList(s string) []string {
 //  Scanning Logic
 // ============================================================
 
+// ignoreRootAndPrefix 找出扫描根所属的仓库根（如果它在 git 仓库里），
+// 返回 ignore root 与“扫描根相对 ignore root”的前缀。
+//
+// 为什么需要：`gx -d src` 只从 src/ 往下读 .gitignore，仓库根目录的
+// `.gitignore` 不生效，与 `gx -g`（git 自己处理）不一致。这里用
+// `git rev-parse --show-toplevel` 找仓库根；不是 git 仓库 / 没装 git 时
+// 退回“扫描根就是 ignore root”的旧行为。
+func ignoreRootAndPrefix(scanRoot string) (root, prefix string) {
+	scanRoot = realPathOrSelf(scanRoot)
+	if top, err := newGitRunner(scanRoot).run("rev-parse", "--show-toplevel"); err == nil {
+		top = strings.TrimSpace(top)
+		if top != "" {
+			top = realPathOrSelf(top)
+			rel, err := filepath.Rel(top, scanRoot)
+			if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				if rel == "." {
+					return top, ""
+				}
+				return top, filepath.ToSlash(rel)
+			}
+		}
+	}
+	return scanRoot, ""
+}
+
 func scanDirectory(config Config) ([]FileMetadata, Stats, []SkippedFile) {
 	var files []FileMetadata
 	stats := Stats{
@@ -679,8 +704,13 @@ func scanDirectory(config Config) ([]FileMetadata, Stats, []SkippedFile) {
 		ignoreNames = append(ignoreNames, ".gitignore")
 	}
 	ignoreNames = append(ignoreNames, ".gdignore")
-	matcher := newIgnoreMatcher(config.RootDir, ignoreNames...)
+	ignoreRoot, ignorePrefix := ignoreRootAndPrefix(config.RootDir)
+	matcher := newIgnoreMatcher(ignoreRoot, ignoreNames...)
+	matcher.setScanPrefix(ignorePrefix)
 	matcher.addCLIPatterns(config.AdditionalIgnores)
+	if config.Verbose && ignoreRoot != realPathOrSelf(config.RootDir) {
+		fmt.Printf("  Ignore root:         %s (父级 .gitignore/.gdignore 生效)\n", ignoreRoot)
+	}
 
 	if config.Verbose {
 		var present []string

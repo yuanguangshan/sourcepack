@@ -1523,3 +1523,42 @@ func TestReadIndexFilesBatchHandlesSpacesMissingAndBinary(t *testing.T) {
 		t.Errorf("含 NUL 的内容应判为二进制，实际 %+v", f)
 	}
 }
+
+// `gx -d src` 必须继承仓库根及中间目录的 .gitignore/.gdignore，否则
+// 全量模式与 `gx -g`（git 自己处理）会出现“同一文件一个忽略一个不忽略”。
+func TestScanDirectoryInheritsParentGitignore(t *testing.T) {
+	dir := newGitFixture(t)
+	writeFile(t, dir, ".gitignore", "*.gen.go\n")
+	writeFile(t, dir, ".gdignore", "src/skip.go\n")
+	writeFile(t, dir, "src/a.gen.go", "package a\n")
+	writeFile(t, dir, "src/skip.go", "package skip\n")
+	writeFile(t, dir, "src/b.go", "package b\n")
+
+	cfg := Config{
+		RootDir:     filepath.Join(dir, "src"),
+		OutputFile:  filepath.Join(t.TempDir(), "out.md"),
+		MaxFileSize: 500 * 1024,
+	}
+	files, _, _ := scanDirectory(cfg)
+	if len(files) != 1 || files[0].RelPath != "b.go" {
+		t.Fatalf("只应留下 src/b.go，实际 %+v", files)
+	}
+}
+
+// -I 的模式始终相对扫描根，即使 matcher 的 root 被提升到仓库根。
+func TestCLIPatternsStayRelativeToScanRoot(t *testing.T) {
+	dir := newGitFixture(t)
+	writeFile(t, dir, "src/a.go", "package a\n")
+	writeFile(t, dir, "src/sub/b.go", "package b\n")
+
+	cfg := Config{
+		RootDir:           filepath.Join(dir, "src"),
+		OutputFile:        filepath.Join(t.TempDir(), "out.md"),
+		MaxFileSize:       500 * 1024,
+		AdditionalIgnores: []string{"sub/*.go"},
+	}
+	files, _, _ := scanDirectory(cfg)
+	if len(files) != 1 || files[0].RelPath != "a.go" {
+		t.Fatalf("-I 'sub/*.go' 应只排除 src/sub/b.go，实际 %+v", files)
+	}
+}
