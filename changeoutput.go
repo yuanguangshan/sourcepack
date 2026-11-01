@@ -622,6 +622,8 @@ func writeChangeContent(config Config, files []FileMetadata, stats Stats, cs *Ch
 				fmt.Fprintln(bw, "\n_New untracked file — full content included below._")
 			case ch.Diff == "" && ch.Status != "" && ch.Status[0] == 'D':
 				fmt.Fprintln(bw, "\n_File deleted._")
+			case ch.DiffDropped:
+				fmt.Fprintf(bw, "\n_Diff omitted: total diff budget (%d MB) exceeded._\n", maxTotalDiffBytes>>20)
 			case ch.Diff == "":
 				fmt.Fprintln(bw, "\n_No textual diff (mode- or rename-only change)._")
 			}
@@ -713,7 +715,7 @@ func summarizeRows(cs *ChangeSet) []summaryRow {
 			for _, f := range ch.Flags() {
 				addFlag(f)
 			}
-			if ch.DiffOmitted > 0 {
+			if ch.DiffOmitted > 0 && !ch.DiffDropped {
 				addFlag("diff truncated")
 			}
 			if ch.NoContent == "Size limit" {

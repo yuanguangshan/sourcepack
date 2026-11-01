@@ -310,7 +310,7 @@ $ gx -g --dry-run -d .
 ```
 
 **注意这一行的基准是 `4b825dc...`——正是第 2 章那个空树对象。**
-源码在 `changeset.go:320` 附近：
+源码在 `changeset.go:339` 附近：
 
 ```go
 		cs.Warnings = append(cs.Warnings, "repository has no commits yet — diffing against the empty tree")
@@ -337,7 +337,7 @@ $ gx -g --dry-run -d . | grep -E "Branch|HEAD"
   HEAD:                aa686d8 docs: v2.0.1 记录（-h 末尾换成参数手册博客版）；还原 v2.0.0 的 help 引用为当时真实输出
 ```
 
-> 注意第三行 `HEAD:` 是**另一个调用**的结果（`changeset.go:290`：
+> 注意第三行 `HEAD:` 是**另一个调用**的结果（`changeset.go:304`：
 > `rev-parse HEAD` + `log -1 --format=%s`），与 `Branch` 分开取——
 > 因为 detached 时"名字"没有，但"值"和"提交标题"都有。
 
@@ -456,10 +456,10 @@ $ git log --oneline -1 8c8ccb5        # 直接按哈希读
 | `changeset.go:271` `rev-parse --show-prefix` | 算子目录作用域 | 用 Git 的路径语义（绕开 `/tmp` 软链坑） |
 | `changeset.go:282-285` `symbolic-ref` → `rev-parse` | 分支名 / detached | **符号引用 vs 值** |
 | `changeset.go:287` `(no commits yet)` | unborn HEAD 的兜底 | 第三种状态 |
-| `changeset.go:290-297` `rev-parse HEAD` → `log -1 --format=%s` | 取当前提交与标题 | 递归解析；无提交时退到 `(no commits yet)` |
-| `changeset.go:292` `log -1 --format=%s` | 取提交标题 | commit 对象的 message |
+| `changeset.go:304-310` `rev-parse HEAD` → `log -1 --format=%s` | 取当前提交与标题 | 递归解析；无提交时退到 `(no commits yet)` |
+| `changeset.go:306` `log -1 --format=%s` | 取提交标题 | commit 对象的 message |
 | `changeset.go` 的 `rev-parse --verify <base>^{commit}` | 校验 `--rev` | **剥壳** + 让 Git 报错（unborn 时走同函数里的空树分支） |
-| `changeset.go:583` `shortSHA(s)` | 取前 7 位 | Git 的最小无歧义缩写习惯 |
+| `changeset.go:597` `shortSHA(s)` | 取前 7 位 | Git 的最小无歧义缩写习惯 |
 
 `shortSHA` 的实现（我们**没有**调 `git rev-parse --short`，因为哈希已在手）：
 

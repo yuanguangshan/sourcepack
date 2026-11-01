@@ -1574,3 +1574,25 @@ func TestCLIPatternsStayRelativeToScanRoot(t *testing.T) {
 		t.Fatalf("-I 'sub/*.go' 应只排除 src/sub/b.go，实际 %+v", files)
 	}
 }
+
+// 总 diff 预算：单次 patch 与单文件都有上限，但 -G N 仍可能把 N 个提交
+// 的 diff 全部留在内存里。超过总预算后从当前文件起省略 diff，保留清单。
+func TestCapTotalDiffBytes(t *testing.T) {
+	cs := &ChangeSet{Commits: []*CommitGroup{{Changes: []*Change{
+		{Path: "a.txt", Diff: "1234", DiffFull: 4},
+		{Path: "b.txt", Diff: "5678", DiffFull: 4},
+	}}}}
+	if !capTotalDiffBytes(cs, 4) {
+		t.Fatal("超过预算时应返回 dropped=true")
+	}
+	a, b := cs.Commits[0].Changes[0], cs.Commits[0].Changes[1]
+	if a.Diff != "1234" || a.DiffDropped {
+		t.Errorf("预算内的 diff 应保留：%+v", a)
+	}
+	if b.Diff != "" || !b.DiffDropped || b.DiffOmitted != 4 {
+		t.Errorf("超预算的 diff 应省略并标记：%+v", b)
+	}
+	if !strings.Contains(strings.Join(b.Flags(), ","), "total budget") {
+		t.Errorf("Flags 应标注总预算省略：%v", b.Flags())
+	}
+}

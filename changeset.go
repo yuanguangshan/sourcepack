@@ -47,6 +47,11 @@ const (
 	// 进内存没有意义，超限时会在最后一个完整文件边界处截断并标注。
 	maxPatchBytes = 64 << 20
 
+	// maxTotalDiffBytes 是所有提交保留的 diff 正文总预算。
+	// -G N 下每个文件虽已按 --max-size 截断，但 N × 文件数仍可能把内存吃满；
+	// 超过预算后从当前文件起省略 diff，并在产物里明确标注。
+	maxTotalDiffBytes = 256 << 20
+
 	// warnDiffLines 超过这个总行数会在终端和文档里提示输出偏大。
 	warnDiffLines = 20000
 
@@ -69,6 +74,7 @@ type Change struct {
 	Untracked   bool
 	Filtered    string // 非空表示被过滤规则排除，值为原因
 	NoContent   string // 非空表示不输出全文，值为原因
+	DiffDropped bool   // 因总 diff 预算被省略
 }
 
 // StatusLabel 把 git 状态码翻译成人话。
@@ -111,6 +117,9 @@ func (c *Change) Flags() []string {
 	}
 	if c.Binary {
 		f = append(f, "binary")
+	}
+	if c.DiffDropped {
+		f = append(f, "diff omitted (total budget)")
 	}
 	return f
 }
@@ -310,6 +319,11 @@ func collectChangeSet(config *Config) (*ChangeSet, error) {
 		if err := collectWorkingTree(g, config, cs); err != nil {
 			return nil, err
 		}
+	}
+	if capTotalDiffBytes(cs, maxTotalDiffBytes) {
+		cs.Warnings = append(cs.Warnings, fmt.Sprintf(
+			"total diff output exceeded %d MB; later diffs were omitted (use --diff-only or a lower --max-diff-lines)",
+			maxTotalDiffBytes>>20))
 	}
 
 	cs.UniquePaths = countUniquePaths(cs)
@@ -628,6 +642,35 @@ func summarizeChangeSet(cs *ChangeSet) {
 		cs.TotalAdded += v[0]
 		cs.TotalDeleted += v[1]
 	}
+}
+
+// capTotalDiffBytes 限制整个 changeset 保留的 diff 正文总字节数。
+//
+// 单次 git diff 已有 64MB 上限，单文件也有 --max-size 上限；但 `-G N`
+// 会把 N 个提交的 diff 全部留在内存里。这里按 changeset 顺序保留到预算，
+// 超出后从当前文件起省略 diff（仍保留清单/状态/行数），避免病态输入 OOM。
+func capTotalDiffBytes(cs *ChangeSet, max int64) bool {
+	if max <= 0 {
+		return false
+	}
+	var total int64
+	dropped := false
+	for _, grp := range cs.Commits {
+		for _, ch := range grp.Changes {
+			if ch.Diff == "" {
+				continue
+			}
+			if !dropped && total+int64(len(ch.Diff)) <= max {
+				total += int64(len(ch.Diff))
+				continue
+			}
+			dropped = true
+			ch.DiffDropped = true
+			ch.DiffOmitted = ch.DiffFull
+			ch.Diff = ""
+		}
+	}
+	return dropped
 }
 
 // markPaths 把 --name-status -z 输出里的所有路径塞进集合。
