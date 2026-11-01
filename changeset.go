@@ -148,6 +148,11 @@ type ChangeSet struct {
 	UntrackedCount int
 	PatchClipped   bool
 	Warnings       []string
+
+	// WorktreeDirty 记录“工作区与索引不同”的路径（--staged 下用于决定
+	// 全文是否必须从索引读；干净文件直接用工作区，省内存）。
+	// nil 表示未知（取不到 unstaged 清单），此时保守地从索引读全部。
+	WorktreeDirty map[string]bool
 }
 
 // ============================================================
@@ -374,17 +379,29 @@ func collectWorkingTree(g *gitRunner, config *Config, cs *ChangeSet) error {
 		return err
 	}
 
-	// 2. 暂存/未暂存标记（仅在 -g 非 --staged 时分别求）
+	// 2. 暂存/未暂存标记。--staged 下也要算 unstagedSet：它用来判断
+	// 哪些文件的全文必须从索引读，哪些干净文件可以直接读工作区（省内存）。
 	stagedSet := map[string]bool{}
 	unstagedSet := map[string]bool{}
-	if !config.GitStaged && !cs.Unborn {
-		stagedArgs := append([]string{"diff", "--no-ext-diff", "--name-status", "-z", "-M", "--cached", base}, g.scoped()...)
-		if out, cerr := g.run(stagedArgs...); cerr == nil {
-			markPaths(out, stagedSet, true)
+	unstagedKnown := false
+	if !cs.Unborn {
+		if !config.GitStaged {
+			stagedArgs := append([]string{"diff", "--no-ext-diff", "--name-status", "-z", "-M", "--cached", base}, g.scoped()...)
+			if out, cerr := g.run(stagedArgs...); cerr == nil {
+				markPaths(out, stagedSet, true)
+			}
 		}
 		unstagedArgs := append([]string{"diff", "--no-ext-diff", "--name-status", "-z", "-M"}, g.scoped()...)
 		if out, uerr := g.run(unstagedArgs...); uerr == nil {
 			markPaths(out, unstagedSet, false)
+			unstagedKnown = true
+		}
+	}
+	if config.GitStaged {
+		if unstagedKnown {
+			cs.WorktreeDirty = unstagedSet
+		} else {
+			cs.WorktreeDirty = nil // 未知：保守地从索引读全部
 		}
 	}
 
@@ -419,7 +436,9 @@ func collectWorkingTree(g *gitRunner, config *Config, cs *ChangeSet) error {
 	for _, ch := range changes {
 		applyChunk(ch, byPath, config.MaxDiffLines, config.MaxFileSize)
 		ch.Staged = stagedSet[ch.Path]
-		ch.Unstaged = unstagedSet[ch.Path]
+		if !config.GitStaged {
+			ch.Unstaged = unstagedSet[ch.Path]
+		}
 	}
 	changes = appendUnmatchedChunks(changes, changeIndex, chunks, byPath, config.MaxDiffLines, config.MaxFileSize)
 	for _, p := range untracked {

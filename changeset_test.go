@@ -1068,16 +1068,22 @@ func TestGitStagedFullContentUsesIndex(t *testing.T) {
 
 	writeFile(t, dir, "a.txt", "one\ntwo\n")
 	gitIn(t, dir, "add", "a.txt")
-	// 工作区再改一次，但不暂存。
+	// 一个干净暂存文件：工作区与索引一致，不需要从索引读全文。
+	writeFile(t, dir, "clean.txt", "clean\n")
+	gitIn(t, dir, "add", "clean.txt")
+	// a.txt 的工作区再改一次，但不暂存（部分暂存）。
 	writeFile(t, dir, "a.txt", "one\ntwo\nthree\n")
 
 	cfg := gitConfig(Config{GitDiff: true, GitStaged: true, MaxDiffLines: 2000}, dir)
 	cs, files, stats, _ := collectForTest(t, cfg)
 
-	var staged FileMetadata
+	var staged, clean FileMetadata
 	for _, f := range files {
-		if f.RelPath == "a.txt" {
+		switch f.RelPath {
+		case "a.txt":
 			staged = f
+		case "clean.txt":
+			clean = f
 		}
 	}
 	if !staged.ContentSet {
@@ -1085,6 +1091,12 @@ func TestGitStagedFullContentUsesIndex(t *testing.T) {
 	}
 	if got := string(staged.Content); got != "one\ntwo\n" {
 		t.Fatalf("--staged 全文应来自索引，实际 %q", got)
+	}
+	if clean.ContentSet {
+		t.Fatal("干净暂存文件应直接读工作区，不该把索引正文也存进内存")
+	}
+	if cs.WorktreeDirty["clean.txt"] {
+		t.Fatal("clean.txt 的工作区与索引一致，不该标成 dirty")
 	}
 
 	var buf bytes.Buffer

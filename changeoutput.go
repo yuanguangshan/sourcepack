@@ -63,11 +63,22 @@ func buildChangeFiles(config *Config, cs *ChangeSet) ([]FileMetadata, Stats, []S
 		}
 	}
 
-	// --staged 下所有正文都来自索引。用一次 `git cat-file --batch -Z`
-	// 批量取，避免每个文件 spawn 一个 git 进程；失败时退回逐文件读取。
+	// --staged 下只有“工作区与索引不同”的文件必须从索引读全文；
+	// 干净文件直接读工作区即可（内容与索引一致），这样不会把所有暂存
+	// 文件的正文都堆在内存里。批量读用一次 `git cat-file --batch -Z`。
 	indexed := map[string]indexFile{}
 	if config.GitStaged {
-		if got, err := readIndexFiles(cs, order, config.MaxFileSize); err == nil {
+		indexPaths := make([]string, 0, len(order))
+		for _, p := range order {
+			ch := lastByPath[p]
+			if ch != nil && ch.Status != "" && ch.Status[0] == 'D' {
+				continue // 删除的文件没有正文
+			}
+			if cs.WorktreeDirty == nil || cs.WorktreeDirty[p] {
+				indexPaths = append(indexPaths, p)
+			}
+		}
+		if got, err := readIndexFiles(cs, indexPaths, config.MaxFileSize); err == nil {
 			indexed = got
 		}
 	}
@@ -95,20 +106,18 @@ func buildChangeFiles(config *Config, cs *ChangeSet) ([]FileMetadata, Stats, []S
 		}
 
 		full := filepath.Join(cs.RepoRoot, filepath.FromSlash(p))
-		if config.GitStaged {
-			// --staged 的正文来自索引，不是工作区。否则“只打包暂存区”
-			// 的产物里会混入尚未暂存的改动，审查者会以为它们也被提交了。
+		if config.GitStaged && ch != nil && ch.Status != "" && ch.Status[0] == 'D' {
+			noContent[p] = "File deleted"
+		} else if config.GitStaged && (cs.WorktreeDirty == nil || cs.WorktreeDirty[p]) {
+			// 部分暂存 / 工作区与索引不同：全文必须取索引，否则会混入
+			// 尚未暂存的改动，审查者会以为它们也被提交了。
 			idx, ok := indexed[p]
 			if !ok {
 				idx = readIndexFile(cs, p, config.MaxFileSize)
 			}
 			switch {
 			case idx.reason != "":
-				reason := idx.reason
-				if reason == "Not in index" && ch != nil && ch.Status != "" && ch.Status[0] == 'D' {
-					reason = "File deleted"
-				}
-				noContent[p] = reason
+				noContent[p] = idx.reason
 			case idx.binary:
 				noContent[p] = "Binary file"
 			default:
@@ -445,7 +454,7 @@ func writeChangeContent(config Config, files []FileMetadata, stats Stats, cs *Ch
 		fmt.Fprintln(bw)
 	}
 	if cs.Mode == "staged" && !config.DiffOnly {
-		fmt.Fprintln(bw, "> Mode: **staged** — full contents come from the index (`git show :path`), not the working tree.")
+		fmt.Fprintln(bw, "> Mode: **staged** — full contents come from the index (`git show :path`) for partially staged files; clean files use the working tree, which matches the index.")
 		fmt.Fprintln(bw)
 	}
 	if cs.PatchClipped {
